@@ -54,3 +54,24 @@ export function createRedactor(raw) {
       .replace(pattern, (matched) => '*'.repeat(matched.length))
   }
 }
+/**
+ * 将招呼语与正文拆分为独立消息。
+ *
+ * 提示词要求招呼语独占一条，但模型仍常将其拼在正文前（无工具调用时尤其明显）。
+ * 格式类要求交由提示词并不稳妥，故在发送前强制拆分。
+ *
+ * @param {string} text 回复文本
+ * @param {string} greeting 招呼语，为空时不拆分
+ * @returns {string[]} 待发送的消息片段
+ */
+export function splitGreeting(text, greeting) {
+  if (typeof text !== 'string' || !text) return [text]
+  const prefix = String(greeting || '').trim()
+  if (!prefix) return [text]
+  const trimmed = text.trimStart()
+  if (!trimmed.startsWith(prefix)) return [text]
+  const rest = trimmed.slice(prefix.length).replace(/^[\s，,、:：。.!！?？~-]+/, '')
+  // 其余为空说明本条仅有招呼语，无需拆分
+  if (!rest) return [text]
+  return [prefix, rest]
+}

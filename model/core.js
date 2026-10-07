@@ -23,7 +23,7 @@ import { getMessageById, upsertMessage } from '../utils/history.js'
 import { v4 as uuid } from 'uuid'
 import fetch from 'node-fetch'
 import { CustomGoogleGeminiClient } from '../client/CustomGoogleGeminiClient.js'
-import { createRedactor, parsePrivateNumbers } from '../utils/redactPrivateNumbers.js'
+import { createRedactor, parsePrivateNumbers, splitGreeting } from '../utils/redactPrivateNumbers.js'
 import { QueryStarRailTool } from '../utils/tools/QueryStarRailTool.js'
 import { WebsiteTool } from '../utils/tools/WebsiteTool.js'
 import { SendPictureTool } from '../utils/tools/SendPictureTool.js'
@@ -438,7 +438,13 @@ class Core {
       option.replyPureTextCallback = async (msg) => {
         // 脱敏置于最外层：调用方传入的 replyPureTextCallback 同样受约束，
         // 否则替换回调实现即可绕过该过滤
-        return await rawReplyPureText(redactPrivateNumber(msg))
+        const safe = redactPrivateNumber(msg)
+        // 招呼语须独占一条：模型常把「Ciallo!」直接拼在正文前，
+        // 提示词约束不稳，故在此按格式强制拆分
+        const parts = splitGreeting(safe, Config.replyGreeting)
+        for (const part of parts) {
+            await rawReplyPureText(part)
+        }
       }
       const forceToolByKeyword = Config.enableForceToolKeywords !== false &&
         Config.geminiForceToolKeywords?.find(k => prompt?.includes(k))

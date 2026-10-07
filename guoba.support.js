@@ -652,6 +652,12 @@ export function supportGuoba() {
           }
         },
         {
+          field: 'replyGreeting',
+          label: '回复招呼语',
+          bottomHelpMessage: '出现在回复开头时会被强制拆成独立一条消息发送（如“Ciallo!”）。提示词无法稳定约束该格式，故在发送前按本项拆分。留空则不拆分',
+          component: 'Input'
+        },
+        {
           field: 'redactPrivateNumbers',
           label: '回复脱敏号码',
           bottomHelpMessage: 'Bot 回复里禁止出现的私密号码，多个用逗号分隔（如 123456789,987654321）。命中即在发送前替换为等长掩码，兜住提示词挡不住的变形输出（完整号码、尾号、空格/连字符分隔、内嵌更长数字等）。留空则不过滤',
