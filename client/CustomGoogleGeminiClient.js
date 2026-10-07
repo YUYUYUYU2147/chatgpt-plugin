@@ -505,7 +505,7 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
             if (replyText.trim()) {
               const userMsg = this.e.img ? this.e.img.map(url => `<img src="${url}" width="256">`).join('\n') + "\n\n" + this.e.msg_bak_2 : this.e.msg_bak_2;
               const { markdown_screenshot } = await import('../../siliconflow-plugin/utils/markdownPic.js')
-              const img = await markdown_screenshot(this.e.user_id, this.e.self_id, userMsg, replyText.trim());
+              const img = await markdown_screenshot(this.e.user_id, this.e.self_id, userMsg, this.redactPrivateNumber(replyText.trim()));
               this.e.reply({ ...img, origin: true }, true)
             }
           } catch (err) {
