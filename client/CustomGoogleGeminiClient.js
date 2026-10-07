@@ -14,6 +14,7 @@ import { convertFacesAndCQCode } from '../utils/face.js'
 import { Config } from '../utils/config.js'
 import { syncInnerOs } from '../utils/innerOs.js';
 import { fetchWithConnectionRetry } from '../utils/network-retry.js'
+import { createRedactor } from '../utils/redactPrivateNumbers.js'
 
 const BASEURL = 'https://generativelanguage.googleapis.com'
 
@@ -105,6 +106,9 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
     this.baseUrl = props.baseUrl || BASEURL
     this.supportFunction = true
     this.debug = props.debug
+    // 工具调用附带文本的发送路径不经replyPureTextCallback（那里才有脱敏），
+    // 因此本类自行持有同一套脱敏函数，供下方直接发送处使用
+    this.redactPrivateNumber = createRedactor(Config.redactPrivateNumbers)
   }
 
   /**
@@ -512,14 +516,14 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
         else {
           if (replyText.length > 1000) {
             // if (opt.auto_makeForwardMsg && replyText.trim()?.length > opt.auto_makeForwardMsg) {
-            this.e.reply(await makeForwardMsg(this.e, splitString_Enter(replyText.trim(), opt.auto_makeForwardMsg), `Tool回复 @${this.e.sender.card || this.e.sender.nickname}`));
+            this.e.reply(await makeForwardMsg(this.e, splitString_Enter(this.redactPrivateNumber(replyText.trim()), opt.auto_makeForwardMsg), `Tool回复 @${this.e.sender.card || this.e.sender.nickname}`));
             // }
             // else {
             //   opt.replyPureTextCallback && await opt.replyPureTextCallback(replyText.trim())
             // }
           } else {
             logger.info("[chatgpt][functionCall附加的对话text] Processing...")
-            this.e.reply((await convertFacesAndCQCode(replyText.trim(), Config.enableRobotAt, Config.isProcessCQAtCode, Config.removeCQCodeFocus, this.e)), true);
+            this.e.reply((await convertFacesAndCQCode(this.redactPrivateNumber(replyText.trim()), Config.enableRobotAt, Config.isProcessCQAtCode, Config.removeCQCodeFocus, this.e)), true);
           }
         }
       }
