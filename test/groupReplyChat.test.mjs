@@ -6,21 +6,26 @@ mock.module('../../../lib/plugins/plugin.js', { defaultExport: class {} })
 mock.module('../../../lib/common/common.js', { defaultExport: {} })
 mock.module('../utils/tts/microsoft-azure.js', { defaultExport: {} })
 mock.module('../utils/common.js', { namedExports: {
-  completeJSON() {}, formatDate() {}, formatDate2() {}, generateAudio() {}, getDefaultReplySetting() {},
+  completeJSON() {}, formatDate() {}, formatDate2() {},
+  generateAudio: async (e, text) => { globalThis.__spoken.push(text); return '[语音]' },
+  getDefaultReplySetting() {},
   getImageOcrText() {}, parseSourceImg: async () => false, getUin: e => e.self_id,
-  getUserData: async () => ({ mode: 'responses' }), getUserReplySetting: async () => ({}),
-  isImage() {}, makeForwardMsg() {}, normalizeChatMode: mode => mode, randomString() {}, render() {}, renderUrl() {}
+  getUserData: async () => ({ mode: 'responses' }), getUserReplySetting: async () => globalThis.__replySetting || {},
+  isImage() {},
+  makeForwardMsg: async (e, content) => { globalThis.__forwards.push(content); return '[合并转发]' },
+  normalizeChatMode: mode => mode, randomString() {}, render() {}, renderUrl() {}
 } })
 mock.module('../utils/conversation.js', { namedExports: { deleteConversation() {}, getConversations() {}, getLatestMessageIdByConversationId() {} } })
 mock.module('../utils/tts.js', { namedExports: { convertSpeaker() {}, speakers: [] } })
-mock.module('../utils/face.js', { namedExports: { convertFacesAndCQCode() {} } })
+mock.module('../utils/face.js', { namedExports: { convertFacesAndCQCode: text => Array.isArray(text) ? text : [text] } })
 mock.module('../model/conversation.js', { namedExports: { ConversationManager: class {}, originalValues: {} } })
 mock.module('../utils/proxy.js', { namedExports: { getProxy() {} } })
 mock.module('../utils/chat.js', { namedExports: { generateSuggestedResponse() {} } })
-mock.module('../utils/postprocessors/BasicProcessor.js', { namedExports: { collectProcessors() {} } })
+mock.module('../utils/postprocessors/BasicProcessor.js', { namedExports: { collectProcessors: async () => [] } })
 mock.module('../utils/paimonFuction.js', { namedExports: {
-  hidePrivacyInfo: text => text, removeCQCode() {}, recognitionResultsByGemini() {},
-  convertSentenceToArray() {}, extractCharacterName() {}, splitString_Enter() {}, processCQMessage: text => text
+  hidePrivacyInfo: text => text, removeCQCode: text => text, recognitionResultsByGemini() {},
+  convertSentenceToArray: text => (Array.isArray(text) ? text : [text]).flatMap(item => String(item).split('\n').filter(Boolean)),
+  extractCharacterName() {}, splitString_Enter: text => (Array.isArray(text) ? text : [text]), processCQMessage: text => text
 } })
 mock.module('../utils/chatCooldown.js', { defaultExport: { check: async () => ({ canChat: true }), end() {} } })
 const requests = []
@@ -34,6 +39,100 @@ globalThis.redis = { get: async () => null }
 globalThis.logger = { info() {}, error(error) { throw error } }
 const { chatgpt } = await import('../apps/chat.js')
 const { groupReply } = await import('../utils/groupReply.js')
+const Core = (await import('../model/core.js')).default
+
+test('回复正文在发送前完成号码脱敏，未配置时保持原样', async t => {
+  const previous = { ...Config }
+  t.after(() => {
+    for (const key of Object.keys(Config)) delete Config[key]
+    Object.assign(Config, previous)
+    delete redis.set
+  })
+  Object.assign(Config, { blockWords: [], rateLimiting: 0, redactPrivateNumbers: '1390963734' })
+  redis.set = async () => 'OK'
+  const sent = []
+  t.mock.method(Core, 'sendMessage', async () => ({ text: '他QQ号是1390963734，别忘了', conversationId: '', id: 'reply-id' }))
+  const e = {
+    isGroup: true, group_id: '100', self_id: '999', user_id: '123',
+    sender: { user_id: '123', role: 'member' }, msg: '他QQ号多少', message: []
+  }
+  const chat = Object.create(chatgpt.prototype)
+  chat.e = e
+  chat.reply = async msg => { sent.push(msg) }
+  await chat.abstractChat(e, e.msg, 'responses', false, { automatic: true })
+  assert.equal(sent.length, 1)
+  assert.doesNotMatch(String(sent[0]), /1390963734/)
+  assert.match(String(sent[0]), /他QQ号是\*{10}，别忘了/)
+
+  // 未配置号码时同一路径不做替换
+  Config.redactPrivateNumbers = ''
+  sent.length = 0
+  await chat.abstractChat(e, e.msg, 'responses', false, { automatic: true })
+  assert.equal(sent.length, 1)
+  assert.equal(String(sent[0]), '他QQ号是1390963734，别忘了')
+})
+
+test('原本漏网的语音、图片、合并转发与分句出口同样完成脱敏', async t => {
+  const previous = { ...Config }
+  t.after(() => {
+    for (const key of Object.keys(Config)) delete Config[key]
+    Object.assign(Config, previous)
+    delete redis.set
+    delete globalThis.__replySetting
+  })
+  Object.assign(Config, {
+    blockWords: [], rateLimiting: 0, redactPrivateNumbers: '1390963734',
+    ttsRegex: '', alsoSendText: false
+  })
+  redis.set = async () => 'OK'
+  t.mock.method(Core, 'sendMessage', async () => ({
+    text: '第一句他QQ号是1390963734\n第二句还是1390963734', conversationId: '', id: 'reply-id'
+  }))
+  const e = {
+    isGroup: true, group_id: '100', self_id: '999', user_id: '123',
+    sender: { user_id: '123', role: 'member' }, msg: '他QQ号多少', message: []
+  }
+
+  const run = async () => {
+    const sent = []
+    globalThis.__spoken = []
+    globalThis.__forwards = []
+    const chat = Object.create(chatgpt.prototype)
+    chat.e = e
+    chat.reply = async msg => { sent.push(msg) }
+    chat.renderImage = async (target, use, response) => { sent.push(response) }
+    return { chat, sent }
+  }
+  const assertNoNumber = (payload) => assert.doesNotMatch(JSON.stringify(payload), /1390963734/)
+
+  // 语音模式：合成文本也要掩码，否则号码被念出来
+  globalThis.__replySetting = { useTTS: true }
+  let { chat, sent } = await run()
+  await chat.abstractChat(e, e.msg, 'responses', false, { automatic: true })
+  assert.deepEqual(globalThis.__spoken.length, 1)
+  assertNoNumber(globalThis.__spoken)
+  globalThis.__replySetting = {}
+
+  // 图片模式：渲染正文取自同一变量
+  ;({ chat, sent } = await run())
+  await chat.abstractChat(e, e.msg, 'responses', true, { automatic: true })
+  assert.equal(sent.length, 1)
+  assertNoNumber(sent[0])
+
+  // 合并转发与分句：切分前已脱敏，两条分支都拿不到原号码
+  Config.auto_makeForwardMsg = 5
+  ;({ chat, sent } = await run())
+  await chat.abstractChat(e, e.msg, 'responses', false, { automatic: true })
+  assert.equal(globalThis.__forwards.length, 1)
+  assertNoNumber(globalThis.__forwards[0])
+  Config.auto_makeForwardMsg = 0
+
+  Config.isConvertSentenceToArrayReply = true
+  ;({ chat, sent } = await run())
+  await chat.abstractChat(e, e.msg, 'responses', false, { automatic: true })
+  assert.equal(sent.length, 2)
+  assertNoNumber(sent)
+})
 
 test('自主回复复用正常聊天入口和用户模式，不传禁用工具参数，仍受黑名单约束', async () => {
   const e = {

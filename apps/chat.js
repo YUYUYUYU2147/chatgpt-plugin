@@ -39,6 +39,7 @@ import {
 import { INNER_OS_BEGIN, INNER_OS_END } from '../utils/innerOs.js'
 import ChatCooldown from '../utils/chatCooldown.js'
 import { groupReply } from '../utils/groupReply.js'
+import { createRedactor } from '../utils/redactPrivateNumbers.js'
 
 let version = Config.version
 let proxy = getProxy()
@@ -1545,6 +1546,16 @@ export class chatgpt extends plugin {
         }
       }
 
+      // 号码脱敏置于所有发送分支之前：正文会流向分句、合并转发、sf 图片、
+      // renderImage 与语音合成等多个出口，逐个分支处理必然漏网。
+      // 此处已过 sydneyMood 与绘图 JSON 的解析，避免掩码破坏 JSON。
+      const redactPrivateNumber = createRedactor(Config.redactPrivateNumbers)
+      response = redactPrivateNumber(response)
+      thinking = redactPrivateNumber(thinking)
+      if (chatMessage?.suggestedResponses) {
+        chatMessage.suggestedResponses = redactPrivateNumber(chatMessage.suggestedResponses)
+      }
+
       if (useTTS) {
         // 缓存数据
         this.cacheContent(e, use, response, prompt, quotemessage, mood, chatMessage.suggestedResponses, imgUrls)
@@ -1673,7 +1684,7 @@ export class chatgpt extends plugin {
         }
         if (chatMessage?.conversation && Config.enableSuggestedResponses && !chatMessage.suggestedResponses && Config.apiKey) {
           try {
-            chatMessage.suggestedResponses = await generateSuggestedResponse(chatMessage.conversation)
+            chatMessage.suggestedResponses = redactPrivateNumber(await generateSuggestedResponse(chatMessage.conversation))
           } catch (err) {
             logger.info('生成建议回复失败', err)
           }
