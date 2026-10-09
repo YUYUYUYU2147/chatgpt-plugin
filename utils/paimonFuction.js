@@ -1,3 +1,4 @@
+import { resolveProvider, providerConfig } from './providers.js'
 import { Config } from '../utils/config.js'
 // import { parseSourceImg } from '../utils/common.js'
 import fetch from 'node-fetch'
@@ -32,8 +33,6 @@ export async function recognitionResultsByGemini(e, img = [], video = [], system
     return '识别出错：' + message
   }
 
-  if (!Config.geminiKey)
-    return fail('请先配置Gemini对话接口')
 
   // 确定目标 URL 和类型
   let targetUrl = null
@@ -54,14 +53,11 @@ export async function recognitionResultsByGemini(e, img = [], video = [], system
 
   if (!targetUrl) return fail('请传入要识别的媒体链接');
 
-  let client = new CustomGoogleGeminiClient({
-    e,
-    userId: e.sender.user_id,
-    key: Config.getGeminiKey,
-    model: Config.gemini_vqa_model,
-    baseUrl: Config.geminiBaseUrl,
-    debug: Config.debug
-  })
+  let provider
+  try {
+    provider = resolveProvider(isVideo ? Config.videoProviderId : Config.imageProviderId)
+    if (isVideo && provider.type !== 'gemini') return fail('视频识别只能使用 Gemini 配置')
+  } catch (err) { return fail(err.message) }
 
   const limitMB = Config.mediaMaxSizeInMB || 10;
   const maxSizeInBytes = limitMB * 1024 * 1024;
@@ -99,8 +95,9 @@ export async function recognitionResultsByGemini(e, img = [], video = [], system
       : (e?.msg || '').replace(reg_chatgpt_for_firstperson_call, '').trim()
     let msg = promptText || 'describe this content in Simplified Chinese'
 
-    let res = await client.sendMessage(msg, {
-      system: systemPrompt,
+    const { SubLLM } = await import('../model/SubLLM.js')
+    const client = new SubLLM({ provider: provider.id, systemPrompt })
+    let res = await client.chat(msg, {
       // 记录点: opt.media
       media: {
         mimeType: mimeType,
@@ -121,24 +118,12 @@ export async function recognitionResultsByGemini(e, img = [], video = [], system
 
 /**
  * @description: 解析当前对话使用的模型提供商（apps/chat.js 中 use 的语义）
- * 与沙箱规划子代理（utils/sandboxSubAgent.js）的 current 语义一致：用户自定义模式 > 全局 CHATGPT:USE > api
+ * 与沙箱规划子代理（utils/sandboxSubAgent.js）的 current 语义一致：本轮提供商快照 > 全局 defaultProviderId
  * @param {*} e 事件对象
- * @return {Promise<string>} 如 api / responses / claude / gemini，可直接交给 SubLLM 使用
+ * @return {Promise<string>} 具体提供商条目 ID，可直接交给 SubLLM 使用
  */
 export async function resolveCurrentChatProvider(e) {
-  let mode = ''
-  try {
-    const userId = e?.sender?.user_id || e?.user_id
-    if (userId) {
-      // common.js 反向依赖本文件，惰性引入以避免循环导入
-      const { getUserData } = await import('./common.js')
-      const userData = await getUserData(userId)
-      mode = userData?.mode === 'default' ? '' : (userData?.mode || '')
-    }
-  } catch (err) {
-    logger.warn(`[resolveCurrentChatProvider] 读取用户对话模式失败，改用全局模式: ${err.message || err}`)
-  }
-  return mode || await redis.get('CHATGPT:USE') || 'api'
+  return e?.modelProviderId || Config.defaultProviderId
 }
 
 /** 当前模型识别只支持这些对话模式；其余模式（如 chatglm/azure）在 SubLLM 里会落到普通 OpenAI 配置，语义错位，应交给 Gemini 回退 */
@@ -178,7 +163,7 @@ export async function recognitionResultsByCurrentModel(e, img = [], video = [], 
 
   // 先判定模式：不支持的模式没必要先去下载媒体
   const provider = await resolveCurrentChatProvider(e)
-  if (!MEDIA_SUPPORTED_USES.includes(provider)) {
+  if (!MEDIA_SUPPORTED_USES.includes(resolveProvider(provider).type) || isVideo && resolveProvider(provider).type !== 'gemini') {
     throw new Error(`当前对话模式(${provider})不支持媒体识别`)
   }
 
@@ -336,7 +321,14 @@ export function convertSentenceToArray(inputArr) {
  * @param {string} geminiBaseUrl - Google AI API基础URL
  * @return {Promise<Array>} 返回可用模型的数组
  */
-export async function getGeminiModelsByFetch(apiKey = Config.getGeminiKey, geminiBaseUrl = Config.geminiBaseUrl) {
+export async function getGeminiModelsByFetch(apiKey, geminiBaseUrl) {
+  if (apiKey === undefined) {
+    const row = resolveProvider()
+    if (row.type !== 'gemini') throw new Error('请先切换到 Gemini 模型提供商')
+    const config = providerConfig(row)
+    apiKey = config.getGeminiKey
+    geminiBaseUrl = config.geminiBaseUrl
+  }
   // 构建请求URL（考虑自定义baseUrl的情况）
   const baseUrl = geminiBaseUrl || 'https://generativelanguage.googleapis.com';
   const endpoint = baseUrl.endsWith('/') ?
@@ -1059,11 +1051,14 @@ async function downloadMediaToBuffer(url, { maxSizeBytes, verifyUrl, expectedKin
         throw new Error(`媒体下载失败：HTTP ${response.status || response.statusText}`)
       }
 
-      // 类型校验放在读 body 之前：URL 返回 200 的 WAF/登录 HTML 不该被当成媒体送进模型
+      let contentType = response.headers.get('content-type') || ''
+      const mimeType = contentType.split(';')[0].trim().toLowerCase()
+      // QQ 视频下载常返回通用二进制类型；只对未声明具体类型的视频改用内容探测。
+      const detectVideoType = expectedKind === 'video' && (!mimeType || mimeType === 'application/octet-stream')
+      // 明确的非媒体响应仍在读 body 前拒绝，避免把 WAF/登录 HTML 当成媒体送进模型。
       if (expectedKind) {
-        const mimeType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
         const accepted = expectedKind === 'video' ? mimeType.startsWith('video/') : mimeType.startsWith('image/')
-        if (!accepted) {
+        if (!accepted && !detectVideoType) {
           response.body?.destroy?.()
           throw new Error(`媒体类型不符：期望 ${expectedKind}/*，实际 ${mimeType || '未知'}`)
         }
@@ -1086,9 +1081,23 @@ async function downloadMediaToBuffer(url, { maxSizeBytes, verifyUrl, expectedKin
         chunks.push(chunk)
       }
 
+      const buffer = Buffer.concat(chunks)
+      if (detectVideoType) {
+        // 复用宿主的文件签名检测，在大小校验后执行；不能仅凭 URL 后缀或请求参数信任视频类型。
+        const fileType = await import('file-type')
+        // 宿主可能安装 v16（CommonJS fromBuffer）或 v17+（ESM fileTypeFromBuffer）。
+        const detect = fileType.fileTypeFromBuffer || fileType.fromBuffer || fileType.default?.fromBuffer
+        if (typeof detect !== 'function') throw new Error('当前 file-type 版本不支持媒体文件类型检测')
+        const detected = await detect(buffer)
+        if (!detected?.mime.startsWith('video/')) {
+          throw new Error(`媒体类型不符：期望 video/*，内容探测为 ${detected?.mime || '未知类型'}`)
+        }
+        contentType = detected.mime
+      }
+
       return {
-        buffer: Buffer.concat(chunks),
-        contentType: response.headers.get('content-type') || '',
+        buffer,
+        contentType,
         contentLength: total
       }
     } finally {
@@ -1112,8 +1121,8 @@ async function downloadMediaToBuffer(url, { maxSizeBytes, verifyUrl, expectedKin
  *                                     处理不可信来源（如模型提供的地址）时必须传 false
  * @param {boolean} opt.allowPrivateNetwork 是否允许访问内网/本机地址，默认 true；
  *                                          处理不可信来源时必须传 false（只允许公网 http/https，逐跳校验并固定连接目标）
- * @param {'image'|'video'} opt.mediaKind 期望的媒体大类；传入后响应 Content-Type 必须是 image/* 或 video/*，
- *                                        用于在读 body 前拒绝返回 200 的 HTML/JSON 等非媒体响应
+ * @param {'image'|'video'} opt.mediaKind 期望的媒体大类；明确的非媒体 Content-Type 在读 body 前拒绝，
+ *                                        视频的空类型或 application/octet-stream 在限量下载后按文件签名确认类型
  * @param {*} e e 可选，用于回复
  * @return {*}
  */

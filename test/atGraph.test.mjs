@@ -11,10 +11,19 @@ const config = { enableMemory: true, enableAtGraph: true, memoryGroupCapture: { 
 let saves = 0
 Object.defineProperties(config, {
   getConfig: { value: () => config },
-  get_geminiModels: { value: () => [] },
-  save: { value: () => { saves++; return true } }
+  save: { value: () => { saves++; return true } },
+  // Config 是 Proxy，commit 由 get 拦截提供；mock 需显式补上，
+  // guoba.support.js 保存表单时走的是 Config.commit 而非 save
+  commit: { value: (candidate) => { saves++; Object.assign(config, candidate); return true } }
 })
-mock.module('../utils/config.js', { namedExports: { Config: config } })
+// 上游 guoba.support.js 还会用到 providerDefaults（锅巴表单默认值），mock 需一并提供，
+// 否则 ESM 具名导入在 mock 环境下直接抛 "does not provide an export named"。
+mock.module('../utils/config.js', {
+  namedExports: {
+    Config: config,
+    providerDefaults: { api: {}, responses: {}, claude: {}, gemini: {} }
+  }
+})
 mock.module('../../../lib/plugins/plugin.js', { defaultExport: class { constructor(options) { Object.assign(this, options) } } })
 let renderResult
 let renderCalls

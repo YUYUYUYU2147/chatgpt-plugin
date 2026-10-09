@@ -1,12 +1,10 @@
 import fs from 'fs'
+import path from 'node:path'
+import { PROVIDER_FIELDS, emptyProviders, findProvider, normalizeProviders, migrateProviders } from './providerProfiles.js'
 import lodash from 'lodash'
 import { normalizeGroupReplyConfig } from './groupReplyConfig.js'
-export const defaultChatGPTAPI = 'https://chat3.avocado.wiki/backend-api/conversation'
-export const officialChatGPTAPI = 'https://chat3.avocado.wiki/backend-api/conversation'
 // Reverse proxy of https://api.openai.com
-export const defaultOpenAIReverseProxy = 'https://mondstadt.d201.eu.org/v1'
-// blocked in China Mainland
-export const defaultOpenAIAPI = 'https://api.openai.com/v1'
+export const defaultOpenAIReverseProxy = 'https://api.openai.com/v1'
 export const pureSydneyInstruction = 'You\'re an AI assistant named [name]. Answer using the same language as the user.'
 const defaultConfig = {
   blockWords: ['屏蔽词1', '屏蔽词b'],
@@ -93,7 +91,7 @@ const defaultConfig = {
   change_handleMsg_tool: true,
   nai3PluginToPaintPrefix: "artist:ciloranko, [artist:tianliang duohe fangdongye], [artist:sho_(sho_lwlw)], [artist:baku-p], [artist:tsubasa_tsubasa],",
   sfPluginToPaintPrefix: "",
-  geminiModelsByFetch: [],
+  // geminiModelsByFetch: [], // 可用模型通过指令即时查询，不再缓存目录。
   draw_PluginCharactersList: '',
   doNotCheckPaintPluginSuccess: true,
   paimon_chuoyichuo_open: true,
@@ -265,7 +263,6 @@ const defaultConfig = {
   meme_CD: 19,
   isConvertSentenceToArrayReply: false,
   geminiModel: 'gemini-flash-latest',
-  gemini_fallbackModel: "gemini-flash-lite-latest",
   gemini_vqa_model: "gemini-flash-lite-latest",
   geminiSearchModel: "gemini-flash-lite-latest",
   gemini_vqa_needMaster: true,
@@ -354,7 +351,7 @@ const defaultConfig = {
   // geminiKeyArr: '',
   geminiPrompt: 'You are Gemini. Your answer shouldn\'t be too verbose. Prefer to answer in Chinese.',
   // origin: https://generativelanguage.googleapis.com
-  geminiBaseUrl: 'https://gemini.ikechan8370.com',
+  geminiBaseUrl: 'https://gemini-proxy1.588686.xyz/',
   geminiTemperature: 0.9,
   geminiMaxOutputTokens: 65536,
   sunoSessToken: '',
@@ -363,7 +360,7 @@ const defaultConfig = {
   SunoModel: 'local',
 
   claudeApiKey: '',
-  claudeApiBaseUrl: 'http://claude-api.ikechan8370.com',
+  claudeApiBaseUrl: 'http://claude-api.xiaodaimao.com',
   claudeApiMaxToken: 65536,
   claudeApiTemperature: 0.8,
   claudeApiModel: '', // claude-3-opus-20240229 claude-3-sonnet-20240229
@@ -497,14 +494,27 @@ const defaultConfig = {
   anythingllm_cacheTTL: 300000, // 缓存有效期（毫秒，默认 5 分钟）
 
 }
+export const providerDefaults = Object.fromEntries(Object.entries(PROVIDER_FIELDS).map(([type, fields]) => [type,
+  Object.fromEntries(fields.map(field => [field, lodash.cloneDeep(defaultConfig[field])]))
+]))
+const legacyDefaults = lodash.cloneDeep(defaultConfig)
+for (const field of Object.values(PROVIDER_FIELDS).flat()) delete defaultConfig[field]
+for (const field of ['gemini_fallbackModel', 'gemini_vqa_model', 'geminiSearchModel', 'geminiTemperature']) delete defaultConfig[field]
+Object.assign(defaultConfig, {
+  providerConfigVersion: 1, modelProviders: emptyProviders(), defaultProviderId: '', fallbackProviderId: '',
+  imageProviderId: '', videoProviderId: '', geminiSearchProviderId: '', translateSource: ''
+})
+
 const _path = process.cwd()
 let config = {}
+let hadConfigFile = false
 if (fs.existsSync(`${_path}/plugins/chatgpt-plugin/config/config.json`)) {
   const fullPath = fs.realpathSync(`${_path}/plugins/chatgpt-plugin/config/config.json`)
   const data = fs.readFileSync(fullPath)
   if (data) {
     try {
       config = JSON.parse(data)
+      hadConfigFile = true
     } catch (e) {
       logger.error('chatgpt插件读取配置文件出错，请检查config/config.json格式，将忽略用户配置转为使用默认配置', e)
       logger.warn('chatgpt插件即将使用默认配置')
@@ -523,18 +533,19 @@ function useWholeArray(objValue, srcValue) {
   if (Array.isArray(srcValue)) return lodash.cloneDeep(srcValue)
 }
 
-// 加载和保存共用规范化，覆盖直接赋值及锅巴通过 getConfig() 批量修改的入口。
-function normalizeProviderBaseUrls(target) {
-  for (const key of ['openAiBaseUrl', 'responsesApiBaseUrl', 'claudeApiBaseUrl', 'geminiBaseUrl']) {
-    if (typeof target[key] === 'string') {
-      target[key] = target[key].trim().replace(/\/+$/, '')
-    }
-  }
+const configPath = `${_path}/plugins/chatgpt-plugin/config/config.json`
+let migrated = false
+if (hadConfigFile && config.providerConfigVersion !== 1) {
+  const raw = config
+  const legacy = raw.modelProviders ? lodash.cloneDeep(raw) : lodash.mergeWith({}, legacyDefaults, raw, useWholeArray)
+  // Redis 只在一次迁移时读取，失败则停止加载，避免错误地换成其他账号。
+  const oldUse = raw.modelProviders ? 'api' : await globalThis.redis?.get?.('CHATGPT:USE') || 'api'
+  migrated = migrateProviders(legacy, providerDefaults, oldUse)
+  config = legacy
 }
-
 config = lodash.mergeWith({}, defaultConfig, config, useWholeArray)
-normalizeProviderBaseUrls(config)
 config.groupReply = normalizeGroupReplyConfig(config.groupReply)
+normalizeProviders(config, providerDefaults)
 config.version = defaultConfig.version
 
 // V2 记忆迁移：旧版 memoryMinImportance 为 1-10 语义，V2 中 importance 为 0-1，归一化防止注入被全部过滤
@@ -583,15 +594,36 @@ function saveDiff(target) {
   }
 
   try {
-    normalizeProviderBaseUrls(target)
-    target.groupReply = normalizeGroupReplyConfig(target.groupReply)
-    const nestedChange = deepDiff(target, defaultConfig);
-    fs.writeFileSync(`${_path}/plugins/chatgpt-plugin/config/config.json`, JSON.stringify(nestedChange, null, 2), { flag: 'w' })
+    const candidate = lodash.cloneDeep(target)
+    candidate.groupReply = normalizeGroupReplyConfig(candidate.groupReply)
+    normalizeProviders(candidate, providerDefaults)
+    const nestedChange = deepDiff(candidate, defaultConfig)
+    // 版本与空表单必须显式持久化，不能被差量保存省略后再次触发旧配置迁移。
+    // TODO: 2个月后(2027年1月8日)移除 commit 5bb9f8a61d68982f97ac8d52afbca2979c9fbe11 及之前初代的配置文件迁移源码
+    nestedChange.providerConfigVersion = 1
+    nestedChange.modelProviders = candidate.modelProviders
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    const temporary = `${configPath}.${process.pid}.tmp`
+    try {
+      fs.writeFileSync(temporary, JSON.stringify(nestedChange, null, 2), { mode: 0o600 })
+      fs.renameSync(temporary, configPath)
+    } finally {
+      if (fs.existsSync(temporary)) fs.unlinkSync(temporary)
+    }
+    Object.assign(target, candidate)
     return true
   } catch (err) {
     logger.error(err)
     return false
   }
+}
+
+if (migrated) {
+  const backup = `${configPath}.providers-backup-${Date.now()}`
+  fs.copyFileSync(configPath, backup, fs.constants.COPYFILE_EXCL)
+  fs.chmodSync(backup, 0o600)
+  if (!saveDiff(config)) throw new Error('[ChatGPT] 模型提供商迁移保存失败，原配置备份已保留')
+  logger.info('[ChatGPT] 模型提供商配置迁移完成，原配置已备份')
 }
 
 /**
@@ -611,6 +643,15 @@ function randomKeyStr(str, funcName) {
 /** Config对象 */
 export const Config = new Proxy(config, {
   get(target, property) {
+    if (property === 'commit') {
+      return candidate => {
+        const next = lodash.cloneDeep(candidate)
+        normalizeProviders(next, providerDefaults)
+        if (!saveDiff(next)) throw new Error('配置保存失败')
+        Object.assign(target, next)
+        return true
+      }
+    }
     if (property === 'save') { // 对于 config 中对象/对象数组 的修改 Proxy 对象不会执行 set() 所以要手动保存
       return function () {
         return saveDiff(target);
@@ -622,7 +663,7 @@ export const Config = new Proxy(config, {
       }
     }
     else if (property === 'getGeminiKey')
-      return randomKeyStr(target.geminiKey, property);
+      return randomKeyStr(findProvider(target, target.defaultProviderId)?.geminiKey || '', property);
     else if (property === 'getTavilyKey')
       return randomKeyStr(target.tavilyKey, property);
     else if (property === 'getBaiduAppBuilderKey')
@@ -643,26 +684,28 @@ export const Config = new Proxy(config, {
         return { ...defaultJson, ...userJson };
       }
     }
-    else if (property === 'get_geminiModels') {
-      return function () {
-        const defaultArr = ['gemini-pro-latest', 'gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview']
-        try {
-          const fetchModels = Array.isArray(target.geminiModelsByFetch) ? target.geminiModelsByFetch : [];
-          return lodash.uniq([...defaultArr, ...fetchModels]);
-        } catch (e) {
-          logger.warn(`[chatgpt]Failed to get Gemini models: ${e.message}`);
-          return defaultArr;
-        }
-      }
-    }
     else if (property === 'paimon_chou_Fighting_Back') {
       return (1 - target.paimon_chou_reply_text - target.paimon_chou_reply_img - target.paimon_chou_reply_voice - target.paimon_chou_mutepick - target.paimon_chou_paimonChuoMeme - target.paimon_chou_randowLocalPic - target.paimon_chou_dailyEnglish).toFixed(3)
     }
 
+    const type = Object.keys(PROVIDER_FIELDS).find(type => PROVIDER_FIELDS[type].includes(property))
+    if (type) {
+      const row = findProvider(target, target.defaultProviderId)
+      return row?.type === type ? row[property] : undefined
+    }
     return target[property]
   },
   set(target, property, value) {
-    target[property] = value
-    return saveDiff(target);
+    const candidate = lodash.cloneDeep(target)
+    const type = Object.keys(PROVIDER_FIELDS).find(type => PROVIDER_FIELDS[type].includes(property))
+    if (type) {
+      const row = candidate.modelProviders[type].find(row => row.id === candidate.defaultProviderId)
+      if (!row) throw new Error('请先切换到对应协议的模型提供商')
+      row[property] = value
+    } else candidate[property] = value
+    normalizeProviders(candidate, providerDefaults)
+    if (!saveDiff(candidate)) throw new Error('配置保存失败')
+    Object.assign(target, candidate)
+    return true
   }
 })

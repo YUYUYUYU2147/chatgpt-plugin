@@ -1,4 +1,5 @@
-import { Config } from './utils/config.js'
+import { listProviders, providerLabel } from './utils/providerProfiles.js'
+import { Config, providerDefaults } from './utils/config.js'
 import { normalizeGroupReplyConfig } from './utils/groupReplyConfig.js'
 import { speakers, vits_emotion_map } from './utils/tts.js'
 import { supportConfigurations as azureRoleList } from './utils/tts/microsoft-azure.js'
@@ -7,7 +8,10 @@ import lodash from "lodash";
 
 // 支持锅巴
 export function supportGuoba() {
-  return {
+  const providers = listProviders(Config.getConfig())
+  const providerOptions = providers.map(row => ({ label: providerLabel(row), value: row.id }))
+  const geminiProviderOptions = providers.filter(row => row.type === 'gemini').map(row => ({ label: providerLabel(row), value: row.id }))
+  const result = {
     // 插件信息，将会显示在前端页面
     // 如果你的插件没有在插件库里，那么需要填上补充信息
     // 如果存在的话，那么填不填就无所谓了，填了就以你的信息为准
@@ -346,29 +350,60 @@ export function supportGuoba() {
           component: 'Divider'
         },
         {
-          field: 'api_default_USE',
+          field: 'defaultProviderId',
           label: '默认使用的模型提供商',
-          bottomHelpMessage: '请在本页配置好对应模型提供商的配置；如果已经对话过建议执行 `#结束全部模型对话` 避免引起404错误',
+          bottomHelpMessage: '所有用户正式聊天使用此配置；修改主模型后请同时检查备用配置。',
           component: 'Select',
           componentProps: {
-            options: [
-              { label: 'OpenAI Chat API', value: 'api' },
-              { label: 'OpenAI Responses API', value: 'responses' },
-              { label: 'Claude', value: 'claude' },
-              { label: 'Gemini', value: 'gemini' }
-            ]
+            options: providerOptions
+          }
+        },
+        {
+          field: 'fallbackProviderId',
+          label: '失败回退模型提供商',
+          bottomHelpMessage: '仅可选同协议的其他条目。回退沿用本轮提示词和历史，使用备用配置的账号、模型及生成参数；下一轮仍优先主模型。',
+          component: 'Select',
+          componentProps: {
+            options: [{ label: '不启用', value: '' }, ...providerOptions]
           }
         },
         {
           field: 'mediaRecognitionSource',
           label: '内容识别来源',
+          bottomHelpMessage: '模型内置优先使用当前对话模型，失败后转指定识别配置；专用识别直接使用下方所选配置。',
           component: 'Select',
-          bottomHelpMessage: '识别引用的图片的内容；选择“模型内置”会让当前对话模型直接识图（需该模型自身支持图片输入，且失败时“按需内容识别”工具会自动回退 Gemini 识别）；推荐无识图能力的API选择“Gemini内容识别”，可在对话的前面加上gemini的图片/视频结果，需要配置 对话-Gemini方式 中的接口和gemini内容识别模型；',
           componentProps: {
             options: [
-              { label: '模型内置', value: 'Orignal' },
-              { label: 'Gemini内容识别', value: 'Gemini' },
+              { label: '模型内置优先', value: 'Orignal' },
+              { label: '专用识别', value: 'Gemini' }
             ]
+          }
+        },
+        {
+          field: 'imageProviderId',
+          label: '图片识别模型提供商',
+          bottomHelpMessage: '',
+          component: 'Select',
+          componentProps: {
+            options: providerOptions
+          }
+        },
+        {
+          field: 'videoProviderId',
+          label: '视频识别模型提供商',
+          bottomHelpMessage: '',
+          component: 'Select',
+          componentProps: {
+            options: geminiProviderOptions
+          }
+        },
+        {
+          field: 'geminiSearchProviderId',
+          label: 'Gemini 原生搜索模型提供商',
+          bottomHelpMessage: '',
+          component: 'Select',
+          componentProps: {
+            options: geminiProviderOptions
           }
         },
         {
@@ -378,277 +413,327 @@ export function supportGuoba() {
           component: 'Switch'
         },
         {
-          label: '以下为OpenAI Chat API方式的配置',
-          component: 'Divider'
-        },
-        {
-          field: 'apiKey',
-          label: 'Chat API Key',
-          bottomHelpMessage: 'OpenAI的ApiKey，用于访问OpenAI的API接口；可用指令： #chatgpt切换API #chatgpt[开启|关闭]API流',
-          component: 'InputPassword'
-        },
-        {
-          field: 'openAiBaseUrl',
-          label: 'Chat API/反代地址',
-          bottomHelpMessage: 'OpenAI兼容API服务器地址，通常以 /v1 结尾；默认值为 https://api.openai.com/v1',
-          component: 'Input',
+          field: 'modelProviders.api',
+          label: 'Chat API 提供商',
+          component: 'GSubForm',
+          bottomHelpMessage: '新增或改名后先保存并刷新页面，再从来源下拉框选择。同类名称不能重复。',
           componentProps: {
-            placeholder: 'https://api.openai.com/v1'
-          }
-        },
-        {
-          field: 'model',
-          label: 'Chat API 模型',
-          bottomHelpMessage: '填写OpenAI模型或OpenAI API兼容的其他模型',
-          component: 'Input'
-        },
-        {
-          field: 'reasoningEffort',
-          label: '思考程度',
-          bottomHelpMessage: '控制模型的思考/推理深度；不修改（默认）为使用模型默认值',
-          component: 'Select',
-          componentProps: {
-            options: [
-              { label: '不修改（默认）', value: '' },
-              { label: 'none（无思考）', value: 'none' },
-              { label: 'minimal（极低）', value: 'minimal' },
-              { label: 'low（低）', value: 'low' },
-              { label: 'medium（中）', value: 'medium' },
-              { label: 'high（高）', value: 'high' },
-              { label: 'xhigh（极高-OpenAI）', value: 'xhigh' },
-              { label: 'max（最高-DeepSeek）', value: 'max' },
+            multiple: true,
+            schemas: [
+              { field: 'id', label: '内部标识', component: 'Input', show: false },
+              { field: 'name', label: '名称', component: 'Input', required: true },
+              {
+                field: 'apiKey',
+                defaultValue: providerDefaults.api.apiKey,
+                label: 'Chat API Key',
+                bottomHelpMessage: 'OpenAI的ApiKey，用于访问OpenAI的API接口；可用指令： #chatgpt切换API #chatgpt[开启|关闭]API流',
+                component: 'InputPassword'
+              },
+              {
+                field: 'openAiBaseUrl',
+                defaultValue: providerDefaults.api.openAiBaseUrl,
+                label: 'Chat API/反代地址',
+                bottomHelpMessage: 'OpenAI兼容API服务器地址，通常以 /v1 结尾；默认值为 https://api.openai.com/v1',
+                component: 'Input',
+                componentProps: {
+                  placeholder: 'https://api.openai.com/v1'
+                }
+              },
+              {
+                field: 'model',
+                defaultValue: providerDefaults.api.model,
+                label: 'Chat API 模型',
+                bottomHelpMessage: '填写此条目使用的模型名称；可发送 #chatgpt获取可用模型',
+                component: 'Input'
+              },
+              {
+                field: 'promptPrefixOverride',
+                defaultValue: providerDefaults.api.promptPrefixOverride,
+                label: '设定',
+                bottomHelpMessage: '你可以在这里写入你希望AI回答的风格，比如你叫作“派蒙”，我希望优先回答中文，回答长一点等',
+                component: 'InputTextArea'
+              },
+              {
+                field: 'temperature',
+                defaultValue: providerDefaults.api.temperature,
+                label: 'temperature',
+                bottomHelpMessage: '用于控制回复内容的多样性，数值越大回复越加随机、多元化，数值越小回复越加保守',
+                component: 'InputNumber',
+                componentProps: {
+                  min: 0,
+                  step: 0.1,
+                  max: 2
+                }
+              },
+              {
+                field: 'reasoningEffort',
+                defaultValue: providerDefaults.api.reasoningEffort,
+                label: '思考程度',
+                bottomHelpMessage: '控制模型的思考/推理深度；不修改（默认）为使用模型默认值',
+                component: 'Select',
+                componentProps: {
+                  options: [
+                    { label: '不修改（默认）', value: '' },
+                    { label: 'none（无思考）', value: 'none' },
+                    { label: 'minimal（极低）', value: 'minimal' },
+                    { label: 'low（低）', value: 'low' },
+                    { label: 'medium（中）', value: 'medium' },
+                    { label: 'high（高）', value: 'high' },
+                    { label: 'xhigh（极高-OpenAI）', value: 'xhigh' },
+                    { label: 'max（最高-DeepSeek）', value: 'max' },
+                  ]
+                }
+              },
+              {
+                field: 'apiMaxToken',
+                defaultValue: providerDefaults.api.apiMaxToken,
+                label: '回复内容最大Token数',
+                bottomHelpMessage: '模型单次回复的Token上限，默认65536（通常设置为 总上下文的一半以内）',
+                component: 'InputNumber'
+              },
+              {
+                field: 'maxModelTokens',
+                defaultValue: providerDefaults.api.maxModelTokens,
+                label: '模型总上下文Token数',
+                bottomHelpMessage: '模型支持的输入+回复总Token上限，可查询于模型官网，例如 100万 上下文。说明：仅用于插件自动压缩历史或群聊记录',
+                component: 'InputNumber'
+              },
+              {
+                field: 'apiStream',
+                defaultValue: providerDefaults.api.apiStream,
+                label: '流式请求',
+                component: 'Switch'
+              },
             ]
           }
         },
         {
-          field: 'promptPrefixOverride',
-          label: '设定',
-          bottomHelpMessage: '你可以在这里写入你希望AI回答的风格，比如你叫作“派蒙”，我希望优先回答中文，回答长一点等',
-          component: 'InputTextArea'
-        },
-        {
-          field: 'apiMaxToken',
-          label: '回复内容最大Token数',
-          bottomHelpMessage: '模型单次回复的Token上限，默认65536（通常设置为 总上下文的一半以内）',
-          component: 'InputNumber'
-        },
-        {
-          field: 'maxModelTokens',
-          label: '模型总上下文Token数',
-          bottomHelpMessage: '模型支持的输入+回复总Token上限，可查询于模型官网，例如 100万 上下文。说明：仅用于插件自动压缩历史或群聊记录',
-          component: 'InputNumber'
-        },
-        {
-          field: 'temperature',
-          label: 'temperature',
-          bottomHelpMessage: '用于控制回复内容的多样性，数值越大回复越加随机、多元化，数值越小回复越加保守',
-          component: 'InputNumber',
+          field: 'modelProviders.responses',
+          label: 'Responses API 提供商',
+          component: 'GSubForm',
+          bottomHelpMessage: '新增或改名后先保存并刷新页面，再从来源下拉框选择。同类名称不能重复。',
           componentProps: {
-            min: 0,
-            step: 0.1,
-            max: 2
-          }
-        },
-        {
-          label: '以下为OpenAI Responses API方式的配置',
-          component: 'Divider'
-        },
-        {
-          field: 'responsesApiKey',
-          label: 'Responses API Key',
-          bottomHelpMessage: '仅用于 OpenAI Responses API，与 OpenAI Chat API 的 Key 独立。',
-          component: 'InputPassword'
-        },
-        {
-          field: 'responsesApiBaseUrl',
-          label: 'Responses API/反代地址',
-          bottomHelpMessage: 'Responses API 服务器地址，通常以 /v1 结尾；默认值为 https://api.deepseek.com/v1。请求会发送至该地址的 /responses 端点。',
-          component: 'Input',
-          componentProps: {
-            placeholder: 'https://api.deepseek.com/v1'
-          }
-        },
-        {
-          field: 'responsesModel',
-          label: 'Responses 模型',
-          bottomHelpMessage: '填写支持 /responses 端点的模型名称。',
-          component: 'Input'
-        },
-        {
-          field: 'responsesSystemPrompt',
-          label: '设定',
-          bottomHelpMessage: 'Responses API 的系统提示词，会作为 instructions 在每一轮请求中发送。',
-          component: 'InputTextArea'
-        },
-        {
-          field: 'responsesReasoningEffort',
-          label: '思考程度',
-          bottomHelpMessage: '控制 Responses 推理模型的思考深度；不修改（默认）为使用模型默认值。',
-          component: 'Select',
-          componentProps: {
-            options: [
-              { label: '不修改（默认）', value: '' },
-              { label: 'none（无思考）', value: 'none' },
-              { label: 'minimal（极低）', value: 'minimal' },
-              { label: 'low（低）', value: 'low' },
-              { label: 'medium（中）', value: 'medium' },
-              { label: 'high（高）', value: 'high' },
-              { label: 'xhigh（极高-OpenAI）', value: 'xhigh' },
-              { label: 'max（最高-DeepSeek）', value: 'max' }
+            multiple: true,
+            schemas: [
+              { field: 'id', label: '内部标识', component: 'Input', show: false },
+              { field: 'name', label: '名称', component: 'Input', required: true },
+              {
+                field: 'responsesApiKey',
+                defaultValue: providerDefaults.responses.responsesApiKey,
+                label: 'Responses API Key',
+                bottomHelpMessage: '仅用于 OpenAI Responses API，与 OpenAI Chat API 的 Key 独立。',
+                component: 'InputPassword'
+              },
+              {
+                field: 'responsesApiBaseUrl',
+                defaultValue: providerDefaults.responses.responsesApiBaseUrl,
+                label: 'Responses API/反代地址',
+                bottomHelpMessage: 'Responses API 服务器地址，通常以 /v1 结尾；默认值为 https://api.deepseek.com/v1。请求会发送至该地址的 /responses 端点。',
+                component: 'Input',
+                componentProps: {
+                  placeholder: 'https://api.deepseek.com/v1'
+                }
+              },
+              {
+                field: 'responsesModel',
+                defaultValue: providerDefaults.responses.responsesModel,
+                label: 'Responses 模型',
+                bottomHelpMessage: '填写此条目使用的模型名称；可发送 #chatgpt获取可用模型',
+                component: 'Input'
+              },
+              {
+                field: 'responsesSystemPrompt',
+                defaultValue: providerDefaults.responses.responsesSystemPrompt,
+                label: '设定',
+                bottomHelpMessage: 'Responses API 的系统提示词，会作为 instructions 在每一轮请求中发送。',
+                component: 'InputTextArea'
+              },
+              {
+                field: 'responsesTemperature',
+                defaultValue: providerDefaults.responses.responsesTemperature,
+                label: '温度',
+                bottomHelpMessage: '用于控制 Responses 回复内容的多样性。',
+                component: 'InputNumber',
+                componentProps: {
+                  min: 0,
+                  step: 0.1,
+                  max: 2
+                }
+              },
+              {
+                field: 'responsesReasoningEffort',
+                defaultValue: providerDefaults.responses.responsesReasoningEffort,
+                label: '思考程度',
+                bottomHelpMessage: '控制 Responses 推理模型的思考深度；不修改（默认）为使用模型默认值。',
+                component: 'Select',
+                componentProps: {
+                  options: [
+                    { label: '不修改（默认）', value: '' },
+                    { label: 'none（无思考）', value: 'none' },
+                    { label: 'minimal（极低）', value: 'minimal' },
+                    { label: 'low（低）', value: 'low' },
+                    { label: 'medium（中）', value: 'medium' },
+                    { label: 'high（高）', value: 'high' },
+                    { label: 'xhigh（极高-OpenAI）', value: 'xhigh' },
+                    { label: 'max（最高-DeepSeek）', value: 'max' }
+                  ]
+                }
+              },
+              {
+                field: 'responsesApiMaxToken',
+                defaultValue: providerDefaults.responses.responsesApiMaxToken,
+                label: '回复内容最大Token数',
+                bottomHelpMessage: 'Responses API 单次回复的 Token 上限（通常设置为 总上下文的一半以内）',
+                component: 'InputNumber'
+              },
+              {
+                field: 'responsesMaxModelTokens',
+                defaultValue: providerDefaults.responses.responsesMaxModelTokens,
+                label: '模型总上下文Token数',
+                bottomHelpMessage: '模型支持的输入+回复总Token上限，可查询模型官网，例如 100万 上下文。说明：仅用于插件自动压缩历史或群聊记录',
+                component: 'InputNumber'
+              },
+              {
+                field: 'responsesStore',
+                defaultValue: providerDefaults.responses.responsesStore,
+                label: '官网保存并续聊',
+                bottomHelpMessage: '默认关闭，使用插件本地历史续聊；开启后使用官网会话 ID，同账号内续聊。',
+                component: 'Switch'
+              },
             ]
           }
         },
         {
-          field: 'responsesTemperature',
-          label: '温度',
-          bottomHelpMessage: '用于控制 Responses 回复内容的多样性。',
-          component: 'InputNumber',
+          field: 'modelProviders.claude',
+          label: 'Claude 提供商',
+          component: 'GSubForm',
+          bottomHelpMessage: '新增或改名后先保存并刷新页面，再从来源下拉框选择。同类名称不能重复。',
           componentProps: {
-            min: 0,
-            step: 0.1,
-            max: 2
-          }
-        },
-        {
-          field: 'responsesApiMaxToken',
-          label: '回复内容最大Token数',
-          bottomHelpMessage: 'Responses API 单次回复的 Token 上限（通常设置为 总上下文的一半以内）',
-          component: 'InputNumber'
-        },
-        {
-          field: 'responsesMaxModelTokens',
-          label: '模型总上下文Token数',
-          bottomHelpMessage: '模型支持的输入+回复总Token上限，可查询模型官网，例如 100万 上下文。说明：仅用于插件自动压缩历史或群聊记录',
-          component: 'InputNumber'
-        },
-        {
-          field: 'responsesStore',
-          label: '官网保存并续聊',
-          bottomHelpMessage: 'Responses API 独有的能力，默认开启。开启后聊天记录储存在官网，使用 previous_response_id 延续当前会话，可降低网络往返开销。关闭时使用 store: false 参数，不保存聊天记录在官网。此开关不影响 token 的消耗',
-          component: 'Switch'
-        },
-        {
-          label: '以下为Claude API方式的配置',
-          component: 'Divider'
-        },
-        {
-          field: 'claudeApiKey',
-          label: 'claude API Key',
-          bottomHelpMessage: '前往 https://console.anthropic.com/settings/keys 注册和生成；可以填写多个，用英文逗号隔开；可用指令： #chatgpt切换claude #chatgpt设置claudeKey',
-          component: 'InputPassword'
-        },
-        {
-          field: 'claudeApiModel',
-          label: 'claude API 模型',
-          bottomHelpMessage: '如 claude-3-sonnet-20240229 或 claude-3-opus-20240229',
-          component: 'Input'
-        },
-        {
-          field: 'claudeApiBaseUrl',
-          label: 'claude API 反代',
-          component: 'Input',
-          componentProps: {
-            placeholder: 'http://claude-api.misaka20001.com'
-          }
-        },
-        {
-          field: 'claudeApiMaxToken',
-          label: 'claude 最大回复token数',
-          component: 'InputNumber'
-        },
-        {
-          field: 'claudeApiTemperature',
-          label: 'claude 温度',
-          component: 'InputNumber',
-          componentProps: {
-            min: 0,
-            max: 1
-          }
-        },
-        {
-          field: 'claudeSystemPrompt',
-          label: 'claude 设定',
-          component: 'InputTextArea'
-        },
-        {
-          label: '以下为Gemini方式的配置',
-          component: 'Divider'
-        },
-        {
-          field: 'geminiBaseUrl',
-          label: 'Gemini反代',
-          bottomHelpMessage: '对https://generativelanguage.googleapis.com的反代，可以填入https://gemini.ikechan8370.com 或 https://gemini.maliy.top （常见报错：500 Internal Server Error）；可用指令： #chatgpt切换gemini #chatgpt设置geminikey #chatgpt(开启|关闭)gemini(搜索|代码执行)',
-          component: 'Input'
-        },
-        {
-          field: 'geminiKey',
-          label: 'API密钥',
-          bottomHelpMessage: '前往https://makersuite.google.com/app/apikey获取，如果有多个用英文逗号隔开，Key将轮替使用',
-          component: 'InputPassword'
-        },
-        {
-          field: 'geminiModel',
-          label: '模型',
-          bottomHelpMessage: '默认值：gemini-flash-latest；只能选择/填写1个模型；可用模型每日自动更新，立即更新指令：#派蒙chatgpt立即执行每日自动任务',
-          component: 'Select',
-          componentProps: {
-            mode: 'tags',
-            maxTagCount: 1,
-            options: Config.get_geminiModels().map(s => { return { label: s, value: s } })
-          }
-        },
-        {
-          field: 'geminiMaxOutputTokens',
-          label: '回复内容最大Token数',
-          bottomHelpMessage: '模型单次回复的Token上限，默认65536。注意 Gemini 的思考(thinking) token 也算在这个额度里，调得太小会让长输出被截断',
-          component: 'InputNumber'
-        },
-        {
-          field: 'geminiThinkingLevel',
-          label: '思考程度',
-          bottomHelpMessage: '模型的思考深度(thinkingLevel)；minimal≈关闭思考；仅支持Gemini-3及以上；不修改（默认）为使用模型默认值',
-          component: 'Select',
-          componentProps: {
-            options: [
-              { label: '不修改（默认）', value: '' },
-              { label: 'minimal（极低）', value: 'minimal' },
-              { label: 'low（低）', value: 'low' },
-              { label: 'medium（中）', value: 'medium' },
-              { label: 'high（高）', value: 'high' },
+            multiple: true,
+            schemas: [
+              { field: 'id', label: '内部标识', component: 'Input', show: false },
+              { field: 'name', label: '名称', component: 'Input', required: true },
+              {
+                field: 'claudeApiKey',
+                defaultValue: providerDefaults.claude.claudeApiKey,
+                label: 'claude API Key',
+                bottomHelpMessage: '前往 https://console.anthropic.com/settings/keys 注册和生成；可以填写多个，用英文逗号隔开；可用指令： #chatgpt切换claude #chatgpt设置claudeKey',
+                component: 'InputPassword'
+              },
+              {
+                field: 'claudeApiBaseUrl',
+                defaultValue: providerDefaults.claude.claudeApiBaseUrl,
+                label: 'claude API 反代',
+                component: 'Input',
+                componentProps: {
+                  placeholder: 'http://claude-api.misaka20001.com'
+                }
+              },
+              {
+                field: 'claudeApiModel',
+                defaultValue: providerDefaults.claude.claudeApiModel,
+                label: 'claude API 模型',
+                bottomHelpMessage: '填写此条目使用的模型名称；可发送 #chatgpt获取可用模型',
+                component: 'Input'
+              },
+              {
+                field: 'claudeSystemPrompt',
+                defaultValue: providerDefaults.claude.claudeSystemPrompt,
+                label: 'claude 设定',
+                component: 'InputTextArea'
+              },
+              {
+                field: 'claudeApiTemperature',
+                defaultValue: providerDefaults.claude.claudeApiTemperature,
+                label: 'claude 温度',
+                component: 'InputNumber',
+                componentProps: {
+                  min: 0,
+                  max: 1
+                }
+              },
+              {
+                field: 'claudeApiMaxToken',
+                defaultValue: providerDefaults.claude.claudeApiMaxToken,
+                label: 'claude 最大回复token数',
+                component: 'InputNumber'
+              },
             ]
           }
         },
         {
-          field: 'gemini_fallbackModel',
-          label: '失败回退模型',
-          bottomHelpMessage: '模型返回错误后改用这个备用模型尝试，默认值：gemini-flash-lite-latest',
-          component: 'Select',
+          field: 'modelProviders.gemini',
+          label: 'Gemini 提供商',
+          component: 'GSubForm',
+          bottomHelpMessage: '新增或改名后先保存并刷新页面，再从来源下拉框选择。同类名称不能重复。',
           componentProps: {
-            mode: 'tags',
-            maxTagCount: 1,
-            options: Config.get_geminiModels().map(s => { return { label: s, value: s } })
-          }
-        },
-        {
-          field: 'gemini_vqa_model',
-          label: 'gemini内容识别模型',
-          bottomHelpMessage: '用于#识图 #gpt翻[英|中|译] 智能模式Gemini内容识别和工具；支持图片和视频识别；默认值：gemini-flash-lite-latest',
-          component: 'Select',
-          componentProps: {
-            mode: 'tags',
-            maxTagCount: 1,
-            options: Config.get_geminiModels().map(s => { return { label: s, value: s } })
-          }
-        },
-        {
-          field: 'geminiSearchModel',
-          label: 'gemini搜索模型',
-          bottomHelpMessage: '用于智能模式(搜索工具)-搜索来源-Gemini原生搜索；默认值：gemini-flash-lite-latest',
-          component: 'Select',
-          componentProps: {
-            mode: 'tags',
-            maxTagCount: 1,
-            options: Config.get_geminiModels().map(s => { return { label: s, value: s } })
+            multiple: true,
+            schemas: [
+              { field: 'id', label: '内部标识', component: 'Input', show: false },
+              { field: 'name', label: '名称', component: 'Input', required: true },
+              {
+                field: 'geminiKey',
+                defaultValue: providerDefaults.gemini.geminiKey,
+                label: 'API密钥',
+                bottomHelpMessage: '前往 https://makersuite.google.com/app/apikey 获取，如果有多个用英文逗号隔开，Key将轮替使用',
+                component: 'InputPassword'
+              },
+              {
+                field: 'geminiBaseUrl',
+                defaultValue: providerDefaults.gemini.geminiBaseUrl,
+                label: 'Gemini反代',
+                bottomHelpMessage: '对 https://generativelanguage.googleapis.com 的反代，可以填入 https://gemini-proxy1.588686.xyz/ 或 https://gemini-proxy4.588686.xyz/ （常见报错：500 Internal Server Error）；可用指令： #chatgpt切换gemini #chatgpt设置geminikey #chatgpt(开启|关闭)gemini(搜索|代码执行)',
+                component: 'Input'
+              },
+              {
+                field: 'geminiModel',
+                defaultValue: providerDefaults.gemini.geminiModel,
+                label: '模型',
+                bottomHelpMessage: '填写此条目使用的模型名称；可发送 #chatgpt获取可用模型',
+                component: 'Input'
+              },
+              {
+                field: 'geminiPrompt',
+                defaultValue: providerDefaults.gemini.geminiPrompt,
+                label: '设定',
+                component: 'InputTextArea'
+              },
+              {
+                field: 'gemini_temperature',
+                defaultValue: providerDefaults.gemini.gemini_temperature,
+                label: 'gemini 温度',
+                bottomHelpMessage: '用于控制回复内容的多样性，数值越大回复越加随机、多元化，数值越小回复越加保守；默认值 0.9',
+                component: 'InputNumber',
+                componentProps: {
+                  min: 0,
+                  step: 0.05,
+                  max: 2
+                }
+              },
+              {
+                field: 'geminiThinkingLevel',
+                defaultValue: providerDefaults.gemini.geminiThinkingLevel,
+                label: '思考程度',
+                bottomHelpMessage: '模型的思考深度(thinkingLevel)；minimal≈关闭思考；仅支持Gemini-3及以上；不修改（默认）为使用模型默认值',
+                component: 'Select',
+                componentProps: {
+                  options: [
+                    { label: '不修改（默认）', value: '' },
+                    { label: 'minimal（极低）', value: 'minimal' },
+                    { label: 'low（低）', value: 'low' },
+                    { label: 'medium（中）', value: 'medium' },
+                    { label: 'high（高）', value: 'high' },
+                  ]
+                }
+              },
+              {
+                field: 'geminiMaxOutputTokens',
+                defaultValue: providerDefaults.gemini.geminiMaxOutputTokens,
+                label: '回复内容最大Token数',
+                bottomHelpMessage: '模型单次回复的Token上限，默认65536。注意 Gemini 的思考(thinking) token 也算在这个额度里，调得太小会让长输出被截断',
+                component: 'InputNumber'
+              },
+            ]
           }
         },
         {
@@ -666,7 +751,7 @@ export function supportGuoba() {
         {
           field: 'gemini_vqa_needMaster',
           label: '只有主人才能#识图',
-          bottomHelpMessage: '只有主人才能使用gemini的#识图 但不影响“对话中图片识别-gemini”；注意： #识图 指令不受“媒体识别容量限制”控制',
+          bottomHelpMessage: '只限制独立 #识图 指令，不影响对话中的图片识别。识图与对话识别统一遵循下方媒体大小限制。',
           component: 'Switch'
         },
         {
@@ -678,22 +763,6 @@ export function supportGuoba() {
           componentProps: {
             min: 1,
             step: 1
-          }
-        },
-        {
-          field: 'geminiPrompt',
-          label: '设定',
-          component: 'InputTextArea'
-        },
-        {
-          field: 'gemini_temperature',
-          label: 'gemini 温度',
-          bottomHelpMessage: '用于控制回复内容的多样性，数值越大回复越加随机、多元化，数值越小回复越加保守；默认值 0.9',
-          component: 'InputNumber',
-          componentProps: {
-            min: 0,
-            step: 0.05,
-            max: 2
           }
         },
         {
@@ -1942,23 +2011,11 @@ export function supportGuoba() {
         {
           field: 'groupReply.provider',
           label: '判断模型来源',
+          bottomHelpMessage: '',
           component: 'Select',
           componentProps: {
-            options: [
-              { label: '跟随全局对话模式', value: 'current' },
-              { label: 'OpenAI Chat API', value: 'api' },
-              { label: 'OpenAI Responses API', value: 'responses' },
-              { label: 'Claude', value: 'claude' },
-              { label: 'Gemini', value: 'gemini' }
-            ]
-          },
-          bottomHelpMessage: '复用所选来源的地址和密钥，仅用于是否回复的判断；正式回复继续使用发言用户的普通对话模型。不支持的全局模式会跳过判断并记录错误'
-        },
-        {
-          field: 'groupReply.model',
-          label: '判断模型名称',
-          bottomHelpMessage: '可填同一来源下更省 token 费用的小模型；留空使用该来源已配置的模型',
-          component: 'Input'
+            options: [{ label: '跟随全局对话模型', value: 'current' }, ...providerOptions]
+          }
         },
         {
           label: '主动打招呼',
@@ -2348,16 +2405,10 @@ export function supportGuoba() {
         {
           field: 'sandboxSubAgentProvider',
           label: '沙箱子代理 LLM',
-          bottomHelpMessage: '本地、Docker 远程和 Vercel 沙箱共用。子代理负责把任务转换为沙箱执行方案；选择“当前对话模型”时跟随用户当前对话模型。',
+          bottomHelpMessage: '',
           component: 'Select',
           componentProps: {
-            options: [
-              { label: '当前对话模型', value: 'current' },
-              { label: 'OpenAI Chat API', value: 'api' },
-              { label: 'OpenAI Responses API', value: 'responses' },
-              { label: 'Gemini', value: 'gemini' },
-              { label: 'Claude', value: 'claude' },
-            ]
+            options: [{ label: '跟随全局对话模型', value: 'current' }, ...providerOptions]
           }
         },
         // {
@@ -2623,15 +2674,10 @@ export function supportGuoba() {
         {
           field: 'translateSource',
           label: '翻译来源',
-          bottomHelpMessage: '设置 #gpt翻译 使用的翻译来源；可用指令：#gpt翻译帮助 #chatgpt设置翻译来源[openai|responses|gemini|baidu|百度翻译]',
+          bottomHelpMessage: '',
           component: 'Select',
           componentProps: {
-            options: [
-              { label: 'OpenAI', value: 'openai' },
-              { label: 'OpenAI Responses API', value: 'responses' },
-              { label: 'Gemini', value: 'gemini' },
-              { label: '百度翻译', value: 'baidu' }
-            ]
+            options: [...providerOptions, { label: '百度翻译', value: 'baidu' }]
           }
         },
         {
@@ -2791,111 +2837,77 @@ export function supportGuoba() {
         configObj.groupReply = normalizeGroupReplyConfig(configObj.groupReply)
         configObj.mcpServers = formatMcpServersForGuoba(configObj.mcpServers)
 
-        // For api_default_USE
-        let currentUse = await redis.get('CHATGPT:USE')
-        configObj.api_default_USE = currentUse || ''
-
         return configObj
       },
       // 设置配置的方法（前端点确定后调用的方法）
       async setConfigData(data, { Result }) {
-        // For api_default_USE
-        if (data.api_default_USE) {
-          await redis.set('CHATGPT:USE', data.api_default_USE)
-          delete data.api_default_USE
-        }
-
-        for (let [keyPath, value] of Object.entries(data)) {
-          // 处理循环任务标签删除同步
-          if (keyPath === 'ScheduleTask_CronTasks_Display') {
-            const remainingIds = value.map(tag => {
-              const m = tag.match(/\[([^\]]+)\]/)
-              return m ? m[1] : null
-            }).filter(Boolean)
-            const tasks = Config.ScheduleTask_CronTasks || []
-            lodash.set(Config.getConfig(), 'ScheduleTask_CronTasks', tasks.filter(t => remainingIds.includes(t.taskId)))
-            continue
-          }
-          if (keyPath === 'mcpServers') {
-            try {
-              value = stringifyMcpServersFromGuoba(value)
-            } catch (err) {
-              return Result.error(`MCP 服务器配置保存失败: ${err.message}`)
+        const candidate = lodash.cloneDeep(Config.getConfig())
+        try {
+          for (let [keyPath, value] of Object.entries(data)) {
+            // 处理循环任务标签删除同步
+            if (keyPath === 'ScheduleTask_CronTasks_Display') {
+              const remainingIds = value.map(tag => {
+                const m = tag.match(/\[([^\]]+)\]/)
+                return m ? m[1] : null
+              }).filter(Boolean)
+              const tasks = Config.ScheduleTask_CronTasks || []
+              lodash.set(candidate, 'ScheduleTask_CronTasks', tasks.filter(t => remainingIds.includes(t.taskId)))
+              continue
             }
-          }
-          // 处理黑名单
-          if (keyPath === 'blockWords' || keyPath === 'promptBlockWords' || keyPath === 'initiativeChatGroups' || keyPath === 'paimon_chuoyichuo_ByMsgGroups') {
-            value = value.toString().split(/[,，;；\|]/)
-          }
-          else if (keyPath === 'blacklist' || keyPath === 'whitelist' || keyPath === 'stealImgWhitelist') {
-            const inputSet = new Set()
-            value = value.toString().split(/[,，;；|\s]/).reduce((acc, item) => {
-              item = item.trim()
-              if (item && !inputSet.has(item)) {
-                inputSet.add(item)
-                acc.push(item)
+            // 处理 mcpServers（上游新增）
+            if (keyPath === 'mcpServers') {
+              try {
+                value = stringifyMcpServersFromGuoba(value)
+              } catch (err) {
+                return Result.error(`MCP 服务器配置保存失败: ${err.message}`)
               }
-              return acc
-            }, [])
-          }
-          // else if (keyPath === 'autoEmoticons.allowGroups' || keyPath === 'autoEmoticons.getBotByQQ_targetQQArr') {
-          //   value = value.map(item => item.trim()).filter(item => item !== '')
-          // }
-
-          // 使用 lodash 处理锅巴传入的 点分隔 keyPath
-          lodash.set(Config.getConfig(), keyPath, value)
-        }
-
-        // 正确储存azureRoleSelect结果
-        const azureSpeaker = azureRoleList.find(config => {
-          let i = config.roleInfo || config.code
-          if (i === data.azureTTSSpeaker) {
-            return config
-          } else {
-            return false
-          }
-        })
-        if (typeof azureSpeaker === 'object' && azureSpeaker !== null) {
-          Config.getConfig().azureTTSSpeaker = azureSpeaker.code
-        }
-
-        /**
-         * @description: 转换 config.{} component: 'Select' 的 mode: 'tags'
-         * @param {*} targetObj config
-         * @param {*} sourceObj data
-         * @param {*} path data[''] 中的点路径字符串值
-         * @return {*}
-         */
-        const assignFirstElementIfExists = (targetObj, sourceObj, path) => {
-          const sourceData = sourceObj[path];
-          if (sourceData == null) return;
-          const firstElement = Array.isArray(sourceData) ? sourceData[0] : sourceData;
-          if (firstElement != null) {
-            const assignPath = path.startsWith('config.') ? path.slice(7) : path;
-            const keys = assignPath.split('.');
-            let current = targetObj;
-            for (let i = 0; i < keys.length - 1; i++) {
-              const key = keys[i];
-              if (current[key] == null) {
-                current[key] = {};
-              }
-              current = current[key];
             }
-            const lastKey = keys[keys.length - 1];
-            current[lastKey] = firstElement;
+            // 处理黑名单（本地：补充 stealImgWhitelist、按空白切分并去重）
+            if (keyPath === 'blockWords' || keyPath === 'promptBlockWords' || keyPath === 'initiativeChatGroups' || keyPath === 'paimon_chuoyichuo_ByMsgGroups') {
+              value = value.toString().split(/[,，;；|]/)
+            }
+            else if (keyPath === 'blacklist' || keyPath === 'whitelist' || keyPath === 'stealImgWhitelist') {
+              const inputSet = new Set()
+              value = value.toString().split(/[,，;；|\s]/).reduce((acc, item) => {
+                item = item.trim()
+                if (item && !inputSet.has(item)) {
+                  inputSet.add(item)
+                  acc.push(item)
+                }
+                return acc
+              }, [])
+            }
+            // else if (keyPath === 'autoEmoticons.allowGroups' || keyPath === 'autoEmoticons.getBotByQQ_targetQQArr') {
+            //   value = value.map(item => item.trim()).filter(item => item !== '')
+            // }
+
+            // 使用 lodash 处理锅巴传入的 点分隔 keyPath
+            lodash.set(candidate, keyPath, value)
           }
-        };
-        assignFirstElementIfExists(Config.getConfig(), data, 'geminiModel');
-        assignFirstElementIfExists(Config.getConfig(), data, 'gemini_fallbackModel');
-        assignFirstElementIfExists(Config.getConfig(), data, 'gemini_vqa_model');
-        assignFirstElementIfExists(Config.getConfig(), data, 'geminiSearchModel');
 
-        Config.getConfig().groupReply = normalizeGroupReplyConfig(Config.getConfig().groupReply)
+          // 正确储存azureRoleSelect结果
+          const azureSpeaker = azureRoleList.find(config => {
+            let i = config.roleInfo || config.code
+            if (i === data.azureTTSSpeaker) {
+              return config
+            } else {
+              return false
+            }
+          })
+          if (typeof azureSpeaker === 'object' && azureSpeaker !== null) {
+            candidate.azureTTSSpeaker = azureSpeaker.code
+          }
 
-        // 对于 config 中对象/对象数组 的修改 Proxy 对象不会执行 set() 所以要手动保存
-        Config.save();
-        return Result.ok({}, '保存成功~')
+          candidate.groupReply = normalizeGroupReplyConfig(candidate.groupReply)
+
+          // 对于 config 中对象/对象数组 的修改 Proxy 对象不会执行 set() 所以要手动保存
+          Config.commit(candidate)
+          return Result.ok({}, '保存成功~')
+        } catch (err) {
+          return Result.error(`配置保存失败：${err.message}`)
+        }
       }
     }
   }
+  return result
 }
