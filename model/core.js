@@ -257,6 +257,22 @@ class Core {
         ...opt.settings
       }
     }
+    // 招呼语拆分统一放在这里：原先只挂在 gemini 分支的 replyPureTextCallback 上，
+    // 另三个 provider 完全不经过，于是同一段提示词下拆不拆全看用哪个模型，
+    // 表现为「有时候 Ciallo 没单独成一条」。
+    // 脱敏同样收口到此，各分支无需各自实现。
+    {
+      const rawReplyPureText = opt.settings.replyPureTextCallback || (async (msg) => {
+        if (msg) await e.reply(msg, true)
+      })
+      const redact = createRedactor(Config.redactPrivateNumbers)
+      opt.settings.replyPureTextCallback = async (msg) => {
+        const safe = redact(msg)
+        for (const part of splitGreeting(safe, Config.replyGreeting)) {
+          await rawReplyPureText(part)
+        }
+      }
+    }
     // 调用方可按次禁用工具，不能临时修改全局配置而影响并发普通对话。
     if (opt.disableTools) opt.enableSmart = false
     use = normalizeChatMode(use)
@@ -443,23 +459,8 @@ class Core {
         system += ' Never output any QQ number in your reply.'
       }
       option.system = system
-      const redactPrivateNumber = createRedactor(Config.redactPrivateNumbers)
-      const rawReplyPureText = opt.settings.replyPureTextCallback || (async (msg) => {
-        if (msg) {
-          await e.reply(msg, true)
-        }
-      })
-      option.replyPureTextCallback = async (msg) => {
-        // 脱敏置于最外层：调用方传入的 replyPureTextCallback 同样受约束，
-        // 否则替换回调实现即可绕过该过滤
-        const safe = redactPrivateNumber(msg)
-        // 招呼语须独占一条：模型常把「Ciallo!」直接拼在正文前，
-        // 提示词约束不稳，故在此按格式强制拆分
-        const parts = splitGreeting(safe, Config.replyGreeting)
-        for (const part of parts) {
-            await rawReplyPureText(part)
-        }
-      }
+      // 脱敏与招呼语拆分已在 sendWithProvider 统一收口，此处只沿用
+      option.replyPureTextCallback = opt.settings.replyPureTextCallback
       const forceToolByKeyword = Config.enableForceToolKeywords !== false &&
         Config.geminiForceToolKeywords?.find(k => prompt?.includes(k))
       option.toolMode = (opt.settings.forceTool || forceToolByKeyword) ? 'ANY' : 'AUTO'

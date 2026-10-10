@@ -39,6 +39,7 @@ mock.module('../utils/config.js', { namedExports: { Config } })
 globalThis.Bot = { uin: [] }
 globalThis.redis = { get: async () => null }
 globalThis.logger = { info() {}, error(error) { throw error } }
+const { splitGreeting } = await import('../utils/redactPrivateNumbers.js')
 const { chatgpt } = await import('../apps/chat.js')
 const { groupReply } = await import('../utils/groupReply.js')
 const Core = (await import('../model/core.js')).default
@@ -72,6 +73,25 @@ test('回复正文在发送前完成号码脱敏，未配置时保持原样', as
   await chat.abstractChat(e, e.msg, 'responses', false, { automatic: true })
   assert.equal(sent.length, 1)
   assert.equal(String(sent[0]), '他QQ号是1390963734，别忘了')
+})
+
+test('招呼语独占一条：半角配置能拆全角输出，未配置时不拆', () => {
+  const text = 'Ciallo！本小姐在呢！哼，小杂鱼们又在偷懒是不是？'
+
+  // 锅巴里通常配成半角「Ciallo!」，模型却倾向输出全角「Ciallo！」；
+  // 此前按原字符串比对，两者不匹配导致拆分静默失效
+  assert.deepEqual(splitGreeting(text, 'Ciallo!'), [ 'Ciallo！', '本小姐在呢！哼，小杂鱼们又在偷懒是不是？' ])
+  assert.deepEqual(splitGreeting('Ciallo!本小姐在呢！', 'Ciallo!'), [ 'Ciallo!', '本小姐在呢！' ])
+  // 拆分后第一段须保留模型原始写法，不被替换成配置里的半角形式
+  assert.equal(splitGreeting(text, 'Ciallo!')[0], 'Ciallo！')
+
+  // 仅含招呼语时不拆，否则会发出空气泡
+  assert.deepEqual(splitGreeting('Ciallo！', 'Ciallo!'), [ 'Ciallo！' ])
+  // 未配置招呼语时保持原样
+  assert.deepEqual(splitGreeting(text, ''), [ text ])
+  assert.deepEqual(splitGreeting(text, undefined), [ text ])
+  // 非招呼语开头不动
+  assert.deepEqual(splitGreeting('哼，小杂鱼！', 'Ciallo!'), [ '哼，小杂鱼！' ])
 })
 
 test('原本漏网的语音、图片、合并转发与分句出口同样完成脱敏', async t => {

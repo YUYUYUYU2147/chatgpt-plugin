@@ -269,6 +269,9 @@ const defaultConfig = {
   // 回复中禁止出现的私密号码，多个以逗号分隔。命中即在发送前替换为掩码，
   // 兜底提示词无法约束的变形输出。
   redactPrivateNumbers: '',
+  // 回复开头的招呼语（如「Ciallo!」）。命中即在发送前拆成独立一条消息，
+  // 因为提示词对「必须独占一条」这类格式约束并不稳定，留空则不拆分。
+  replyGreeting: '',
   ttsHD: false,
   focus_CloudTranscode: false,
   initiativeChatGroups: [],

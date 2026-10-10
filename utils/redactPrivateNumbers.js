@@ -54,11 +54,27 @@ export function createRedactor(raw) {
       .replace(pattern, (matched) => '*'.repeat(matched.length))
   }
 }
+/** 把全角标点与空格归一，便于招呼语按「词」比较而非逐字符 */
+function normalize(text) {
+  return String(text || '')
+    .replace(/[！!]/g, '!')
+    .replace(/[，,]/g, ',')
+    .replace(/[。]/g, '.')
+    .replace(/[？?]/g, '?')
+    .replace(/[：:]/g, ':')
+    .replace(/[、]/g, ',')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 /**
  * 将招呼语与正文拆分为独立消息。
  *
  * 提示词要求招呼语独占一条，但模型仍常将其拼在正文前（无工具调用时尤其明显）。
  * 格式类要求交由提示词并不稳妥，故在发送前强制拆分。
+ *
+ * 比较前会把全角标点归一：锅巴里常配成半角「Ciallo!」，而模型倾向输出
+ * 全角「Ciallo！」，此前按原字符串比对导致两者不匹配，拆分静默失效。
  *
  * @param {string} text 回复文本
  * @param {string} greeting 招呼语，为空时不拆分
@@ -66,12 +82,26 @@ export function createRedactor(raw) {
  */
 export function splitGreeting(text, greeting) {
   if (typeof text !== 'string' || !text) return [text]
-  const prefix = String(greeting || '').trim()
-  if (!prefix) return [text]
+  const rawPrefix = String(greeting || '').trim()
+  if (!rawPrefix) return [text]
+
   const trimmed = text.trimStart()
-  if (!trimmed.startsWith(prefix)) return [text]
-  const rest = trimmed.slice(prefix.length).replace(/^[\s，,、:：。.!！?？~-]+/, '')
+  const normPrefix = normalize(rawPrefix)
+  const normText = normalize(trimmed)
+  if (!normPrefix || !normText) return [text]
+  if (!normText.startsWith(normPrefix)) return [text]
+
+  // 按归一后的前缀长度回切原文：逐字符推进直到归一结果与 normPrefix 等长，
+  // 这样切出的 rest 仍保留模型原始的大小写与标点
+  let cut = 0
+  let normalized = ''
+  while (cut < trimmed.length) {
+    normalized = normalize(trimmed.slice(0, cut + 1))
+    cut++
+    if (normalized.length >= normPrefix.length) break
+  }
+  const rest = trimmed.slice(cut).replace(/^[\s，,、:：。.!！?？~-]+/, '')
   // 其余为空说明本条仅有招呼语，无需拆分
   if (!rest) return [text]
-  return [prefix, rest]
+  return [trimmed.slice(0, cut).trim(), rest]
 }
