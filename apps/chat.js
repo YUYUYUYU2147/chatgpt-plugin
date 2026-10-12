@@ -43,6 +43,7 @@ import { INNER_OS_BEGIN, INNER_OS_END } from '../utils/innerOs.js'
 import ChatCooldown from '../utils/chatCooldown.js'
 import { groupReply } from '../utils/groupReply.js'
 import { createRedactor } from '../utils/redactPrivateNumbers.js'
+import { avatarReply } from '../utils/avatarReply.js'
 
 let version = Config.version
 let proxy = getProxy()
@@ -1472,9 +1473,12 @@ export class chatgpt extends plugin {
         }
       }
 
-      // 号码脱敏置于所有发送分支之前：正文会流向分句、合并转发、sf 图片、
+// 号码脱敏置于所有发送分支之前：正文会流向分句、合并转发、sf 图片、
       // renderImage 与语音合成等多个出口，逐个分支处理必然漏网。
       // 此处已过 sydneyMood 与绘图 JSON 的解析，避免掩码破坏 JSON。
+      //
+      // 放在 avatarReply 之前：动图回复分支会用 response 再发一次正文，
+      // 必须保证那条路径拿到的也是脱敏后的文本，否则会从新出口漏出去。
       const redactPrivateNumber = createRedactor(Config.redactPrivateNumbers)
       response = redactPrivateNumber(response)
       thinking = redactPrivateNumber(thinking)
@@ -1482,6 +1486,21 @@ export class chatgpt extends plugin {
         chatMessage.suggestedResponses = redactPrivateNumber(chatMessage.suggestedResponses)
       }
 
+      const withAvatar = !chatMessage.error && avatarReply.enabled(e)
+      let avatarTextSent = false
+      if (withAvatar) {
+        // 先完成正文发送；后续语音/图片模式继续工作，但不再重复发送正文。
+        let fullText = await convertFacesAndCQCode(response, config.enableRobotAt, config.isProcessCQAtCode, config.removeCQCodeFocus, e)
+        if (handler.has('chatgpt.markdown.convert')) {
+          fullText = await handler.call('chatgpt.markdown.convert', this.e, { content: fullText, use, prompt })
+        }
+        if (config.auto_makeForwardMsg && response.length > config.auto_makeForwardMsg) {
+          await this.reply(await makeForwardMsg(e, splitString_Enter(fullText, config.auto_makeForwardMsg), '完整回复'))
+        } else {
+          await this.reply(fullText, e.isGroup)
+        }
+        avatarTextSent = true
+      }
       if (useTTS) {
         // 缓存数据
         this.cacheContent(e, use, response, prompt, quotemessage, mood, chatMessage.suggestedResponses, imgUrls)
@@ -1521,12 +1540,12 @@ export class chatgpt extends plugin {
         // 处理多行回复有时候只会读第一行和azure语音会读出一些标点符号的问题
         ttsResponse = ttsResponse.replace(/[-:_；*;\n]/g, '，')
         // 先把“xx知道哦”回复发出去，避免过久等待合成语音
-        if (config.alsoSendText || ttsResponse.length > parseInt(config.ttsAutoFallbackThreshold)) {
+        if (!avatarTextSent && (config.alsoSendText || ttsResponse.length > parseInt(config.ttsAutoFallbackThreshold))) {
           if (config.ttsMode === 'vits-uma-genshin-honkai' && ttsResponse.length > parseInt(config.ttsAutoFallbackThreshold)) {
             await this.reply(`${config.tts_First_person}知道哦`, true, { recallMsg: !config.is_recallMsg ? 0 : 30 })
           }
           let responseText = await convertFacesAndCQCode(response, config.enableRobotAt, config.isProcessCQAtCode, config.removeCQCodeFocus, e)
-          if (handler.has('chatgpt.markdown.convert')) {
+          if (!avatarTextSent && handler.has('chatgpt.markdown.convert')) {
             responseText = await handler.call('chatgpt.markdown.convert', this.e, {
               content: responseText,
               use,
@@ -1597,7 +1616,7 @@ export class chatgpt extends plugin {
           return false
         }
         let responseText = await convertFacesAndCQCode(response, config.enableRobotAt, config.isProcessCQAtCode, config.removeCQCodeFocus, e)
-        if (handler.has('chatgpt.markdown.convert')) {
+        if (!avatarTextSent && handler.has('chatgpt.markdown.convert')) {
           responseText = await handler.call('chatgpt.markdown.convert', this.e, {
             content: responseText,
             use,
@@ -1615,7 +1634,7 @@ export class chatgpt extends plugin {
             logger.info('生成建议回复失败', err)
           }
         }
-        if (config.isConvertSentenceToArrayReply) {
+        if (!avatarTextSent && config.isConvertSentenceToArrayReply) {
           /** 包含at对象的多次回复 */
           const logicalGroups = convertSentenceToArray(responseText);
           for (let i = 0; i < logicalGroups.length; i++) {
@@ -1623,7 +1642,7 @@ export class chatgpt extends plugin {
             await sleep_zz(Math.random() * 5000 + 2000);
           }
         }
-        else if (config.sf_markdownPic) {
+        else if (!avatarTextSent && config.sf_markdownPic) {
           // sf图片模式
           try {
             if (responseText.join('')?.trim()) {
@@ -1638,7 +1657,7 @@ export class chatgpt extends plugin {
             logger.error('[ChatGPT]sf图片模式错误\n' + err)
           }
         }
-        else {
+        else if (!avatarTextSent) {
           if (config.auto_makeForwardMsg && responseText.join('')?.length > config.auto_makeForwardMsg) {
             this.reply(await makeForwardMsg(this.e, splitString_Enter(responseText, config.auto_makeForwardMsg), `回复 @${e.sender.card || e.sender.nickname}`));
           }
@@ -1664,6 +1683,7 @@ export class chatgpt extends plugin {
           this.reply(`建议的回复：\n${chatMessage.suggestedResponses}`)
         }
       }
+      if (withAvatar) await avatarReply.send(e, response, chatMessage.actualProviderId || profile.id)
     } catch (err) {
       logger.error(err)
       if (err === 'Error: {"detail":"Conversation not found"}') {

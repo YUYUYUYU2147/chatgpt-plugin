@@ -3,6 +3,7 @@ import path from 'node:path'
 import { PROVIDER_FIELDS, emptyProviders, findProvider, normalizeProviders, migrateProviders } from './providerProfiles.js'
 import lodash from 'lodash'
 import { normalizeGroupReplyConfig } from './groupReplyConfig.js'
+import { normalizeAvatarReplyConfig } from './avatar/config.js'
 // Reverse proxy of https://api.openai.com
 export const defaultOpenAIReverseProxy = 'https://api.openai.com/v1'
 export const pureSydneyInstruction = 'You\'re an AI assistant named [name]. Answer using the same language as the user.'
@@ -373,6 +374,7 @@ const defaultConfig = {
   enableMd: false, // 第三方md，非QQBot。需要适配器实现segment.markdown和segment.button方可使用，否则不建议开启，会造成各种错误
   enableToolbox: false, // 默认关闭工具箱节省占用和加速启动
   groupReply: normalizeGroupReplyConfig(),
+  avatarReply: normalizeAvatarReplyConfig(),
   // 思考过程转发
   forwardReasoning: true,
   geminiEnableGoogleSearch: false,
@@ -548,6 +550,7 @@ if (hadConfigFile && config.providerConfigVersion !== 1) {
 }
 config = lodash.mergeWith({}, defaultConfig, config, useWholeArray)
 config.groupReply = normalizeGroupReplyConfig(config.groupReply)
+config.avatarReply = normalizeAvatarReplyConfig(config.avatarReply)
 normalizeProviders(config, providerDefaults)
 config.version = defaultConfig.version
 
@@ -576,6 +579,7 @@ config.focus_CloudTranscode = false
 config.ttsHD = false
 config.doNotCheckPaintPluginSuccess = true
 config.agent_LocalSandboxSwitch = false
+config.live2d = false
 // ===================
 
 function saveDiff(target) {
@@ -599,6 +603,7 @@ function saveDiff(target) {
   try {
     const candidate = lodash.cloneDeep(target)
     candidate.groupReply = normalizeGroupReplyConfig(candidate.groupReply)
+    candidate.avatarReply = normalizeAvatarReplyConfig(candidate.avatarReply)
     normalizeProviders(candidate, providerDefaults)
     const nestedChange = deepDiff(candidate, defaultConfig)
     // 版本与空表单必须显式持久化，不能被差量保存省略后再次触发旧配置迁移。
