@@ -51,10 +51,10 @@ test('回复正文在发送前完成号码脱敏，未配置时保持原样', as
     Object.assign(Config, previous)
     delete redis.set
   })
-  Object.assign(Config, { blockWords: [], rateLimiting: 0, redactPrivateNumbers: '1390963734' })
+  Object.assign(Config, { blockWords: [], rateLimiting: 0, redactPrivateNumbers: '18500001234' })
   redis.set = async () => 'OK'
   const sent = []
-  t.mock.method(Core, 'sendMessage', async () => ({ text: '他QQ号是1390963734，别忘了', conversationId: '', id: 'reply-id' }))
+  t.mock.method(Core, 'sendMessage', async () => ({ text: '他QQ号是18500001234，别忘了', conversationId: '', id: 'reply-id' }))
   const e = {
     isGroup: true, group_id: '100', self_id: '999', user_id: '123',
     sender: { user_id: '123', role: 'member' }, msg: '他QQ号多少', message: []
@@ -64,15 +64,16 @@ test('回复正文在发送前完成号码脱敏，未配置时保持原样', as
   chat.reply = async msg => { sent.push(msg) }
   await chat.abstractChat(e, e.msg, 'responses', false, { automatic: true })
   assert.equal(sent.length, 1)
-  assert.doesNotMatch(String(sent[0]), /1390963734/)
-  assert.match(String(sent[0]), /他QQ号是\*{10}，别忘了/)
+  assert.doesNotMatch(String(sent[0]), /18500001234/)
+  // 掩码长度随号码位数变化，不写死星号个数
+  assert.match(String(sent[0]), new RegExp(`他QQ号是\\*{${'18500001234'.length}}，别忘了`))
 
   // 未配置号码时同一路径不做替换
   Config.redactPrivateNumbers = ''
   sent.length = 0
   await chat.abstractChat(e, e.msg, 'responses', false, { automatic: true })
   assert.equal(sent.length, 1)
-  assert.equal(String(sent[0]), '他QQ号是1390963734，别忘了')
+  assert.equal(String(sent[0]), '他QQ号是18500001234，别忘了')
 })
 
 test('招呼语独占一条：半角配置能拆全角输出，未配置时不拆', () => {
@@ -103,12 +104,12 @@ test('原本漏网的语音、图片、合并转发与分句出口同样完成�
     delete globalThis.__replySetting
   })
   Object.assign(Config, {
-    blockWords: [], rateLimiting: 0, redactPrivateNumbers: '1390963734',
+    blockWords: [], rateLimiting: 0, redactPrivateNumbers: '18500001234',
     ttsRegex: '', alsoSendText: false
   })
   redis.set = async () => 'OK'
   t.mock.method(Core, 'sendMessage', async () => ({
-    text: '第一句他QQ号是1390963734\n第二句还是1390963734', conversationId: '', id: 'reply-id'
+    text: '第一句他QQ号是18500001234\n第二句还是18500001234', conversationId: '', id: 'reply-id'
   }))
   const e = {
     isGroup: true, group_id: '100', self_id: '999', user_id: '123',
@@ -125,7 +126,7 @@ test('原本漏网的语音、图片、合并转发与分句出口同样完成�
     chat.renderImage = async (target, use, response) => { sent.push(response) }
     return { chat, sent }
   }
-  const assertNoNumber = (payload) => assert.doesNotMatch(JSON.stringify(payload), /1390963734/)
+  const assertNoNumber = (payload) => assert.doesNotMatch(JSON.stringify(payload), /18500001234/)
 
   // 语音模式：合成文本也要掩码，否则号码被念出来
   globalThis.__replySetting = { useTTS: true }
