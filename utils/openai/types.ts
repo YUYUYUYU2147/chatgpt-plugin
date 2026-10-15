@@ -12,6 +12,9 @@ export type ChatGPTAPIOptions = {
     /** @defaultValue `'https://api.openai.com'` **/
     apiBaseUrl?: string
 
+    /** 模型提供商条目名称，用于 Token 日志区分 */
+    providerName?: string
+
     apiOrg?: string
 
     /** @defaultValue `false` **/
@@ -242,6 +245,7 @@ export namespace openai {
                     role: Role
                     content?: string,
                     reasoning_content?: string,
+                    reasoning?: string,
                     function_call?: FunctionCall,
                     tool_calls: ToolCall[]
                 }
@@ -324,6 +328,7 @@ export namespace openai {
          */
         content: string
         reasoning_content: string
+        reasoning?: string
         function_call: FunctionCall,
         tool_calls: ToolCall[]
     }

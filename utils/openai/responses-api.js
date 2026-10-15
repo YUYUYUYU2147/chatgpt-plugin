@@ -3,12 +3,15 @@
  * It intentionally keeps the Responses item protocol separate from the
  * Chat Completions message protocol used by chatgpt-api.js.
  */
+import { fetchWithConnectionRetry } from '../network-retry.js'
+
 export class ResponsesAPI {
   constructor (opts = {}) {
     const {
       apiKey,
       apiBaseUrl = 'https://api.openai.com/v1',
       debug = false,
+      providerName = '',
       fetch = globalThis.fetch,
       maxResponseTokens,
       maxModelTokens
@@ -19,6 +22,7 @@ export class ResponsesAPI {
 
     this._apiKey = apiKey
     this._apiBaseUrl = apiBaseUrl.replace(/\/+$/, '')
+    this._providerName = providerName
     this._debug = debug
     this._fetch = fetch
     this._maxResponseTokens = maxResponseTokens
@@ -39,8 +43,26 @@ export class ResponsesAPI {
   _extractReasoningText (response) {
     return (response.output || [])
       .filter(item => item.type === 'reasoning')
-      .flatMap(item => item.summary || [])
-      .map(item => item.text || '')
+      .flatMap(item => {
+        const parts = []
+        // summary 优先：形态可能是 [{ type: 'summary_text', text }]，也可能是字符串数组或单个字符串
+        if (typeof item.summary === 'string') {
+          parts.push(item.summary)
+        } else if (Array.isArray(item.summary)) {
+          for (const summary of item.summary) {
+            if (typeof summary === 'string') parts.push(summary)
+            else if (summary && typeof summary.text === 'string') parts.push(summary.text)
+          }
+        }
+        // summary 为空时回退原始 CoT（gpt-oss 等模型会返回 content[].reasoning_text）
+        if (!parts.some(Boolean) && Array.isArray(item.content)) {
+          parts.length = 0
+          for (const content of item.content) {
+            if (content && content.type === 'reasoning_text' && typeof content.text === 'string') parts.push(content.text)
+          }
+        }
+        return parts
+      })
       .filter(Boolean)
       .join('\n')
   }
@@ -97,7 +119,7 @@ export class ResponsesAPI {
     if (this._debug) console.log('[Chatgpt][Responses] request:', JSON.stringify(body, null, 2))
 
     try {
-      const res = await this._fetch(url, {
+      const res = await fetchWithConnectionRetry(this._fetch, url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -105,6 +127,10 @@ export class ResponsesAPI {
         },
         body: JSON.stringify(body),
         signal: controller?.signal
+      }, {
+        onRetry: ({ error, retry, maxRetries, delayMs }) => {
+          console.warn(`[Chatgpt][Responses] 连接失败 (${error.code || error.message})，${delayMs / 1000} 秒后进行第 ${retry}/${maxRetries} 次重试`)
+        }
       })
       if (!res.ok) {
         const reason = await res.text()
@@ -155,7 +181,7 @@ export class ResponsesAPI {
         const cacheReadInfo = reportedCacheReadTokens == null
           ? ''
           : ` | 缓存命中(${cacheReadTokens}, ${cacheHitRate.toFixed(1)}%)`
-        console.info(`[Chatgpt][Responses] 输入Token(${inputTokens})${maxOutputTokens ? ` | 回复上限(${maxOutputTokens})` : ''} | 回答Token(${answerTokens})${reasoningInfo} | 累计Token(${totalTokenCount})${cacheWriteInfo}${cacheReadInfo}`)
+        console.info(`[Chatgpt][Responses]${this._providerName ? `[${this._providerName}]` : ''} 输入Token(${inputTokens})${maxOutputTokens ? ` | 回复上限(${maxOutputTokens})` : ''} | 回答Token(${answerTokens})${reasoningInfo} | 累计Token(${totalTokenCount})${cacheWriteInfo}${cacheReadInfo}`)
         if (this._maxModelTokens && maxOutputTokens && inputTokens + maxOutputTokens > this._maxModelTokens) {
           console.warn(`[Chatgpt][Responses] 当前 token 配置边界过紧：输入Token(${inputTokens}) + 回复上限(${maxOutputTokens}) > 总上下文(${this._maxModelTokens})。请检查锅巴中的 Responses Token 配置。`)
         }

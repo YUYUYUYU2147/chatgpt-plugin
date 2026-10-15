@@ -2,15 +2,8 @@ import crypto from 'crypto'
 import { GoogleGeminiClient } from './GoogleGeminiClient.js'
 import { newFetch } from '../utils/proxy.js'
 import _ from 'lodash'
-import {
-  splitString_Enter,
-} from '../utils/paimonFuction.js'
-
-import {
-  makeForwardMsg,
-} from '../utils/common.js'
-import { sendToolCallForwardMsg } from '../utils/toolForward.js'
-import { convertFacesAndCQCode } from '../utils/face.js'
+import { sendToolCallForwardMsg, sendToolRoundTextForwardMsg } from '../utils/toolForward.js'
+import { normalizeModelText } from '../utils/thinking.js'
 import { Config } from '../utils/config.js'
 import { syncInnerOs } from '../utils/innerOs.js';
 import { fetchWithConnectionRetry } from '../utils/network-retry.js'
@@ -109,6 +102,7 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
     this.baseUrl = props.baseUrl || BASEURL
     this.supportFunction = true
     this.debug = props.debug
+    this.providerName = props.providerName || ''
     // 工具调用附带文本的发送路径不经replyPureTextCallback（那里才有脱敏），
     // 因此本类自行持有同一套脱敏函数，供下方直接发送处使用
     this.redactPrivateNumber = createRedactor(Config.redactPrivateNumbers)
@@ -130,12 +124,11 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
    *     temperature: number?,
    *     topP: number?,
    *     tokK: number?,
-   *     replyPureTextCallback: Function,
    *     toolMode: 'AUTO' | 'ANY' | 'NONE'
    *     search: boolean,
    *     codeExecution: boolean,
    * }} opt
-   * @returns {Promise<{conversationId: string?, parentMessageId: string, text: string, id: string}>}
+   * @returns {Promise<{conversationId: string?, parentMessageId: string, text: string, thinking_text?: string, id: string}>}
    */
   async sendMessage(text, opt = {}) {
     const Config = this.config
@@ -254,7 +247,7 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
     const normalizedHistory = normalizeGeminiHistory(history, maxHistoryWithCurrentMessage)
     history = normalizedHistory.history
     if (this.debug && normalizedHistory.changed) {
-      logger.info(`[Chatgpt][Gemini] cleaned invalid function-call history: ${JSON.stringify(normalizedHistory.stats)}`)
+      console.info(`[Chatgpt][Gemini] cleaned invalid function-call history: ${JSON.stringify(normalizedHistory.stats)}`)
     }
 
     // retryConfig 根据是否处于备用模式决定使用的模型名称
@@ -328,7 +321,7 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
     //   delete body.tool_config
     // }
     if (this.debug) {
-      logger.info("body: " + JSON.stringify(body, null, 2))
+      console.info("body: " + JSON.stringify(body, null, 2))
     }
     const apiStartAt = Date.now()
     let result = await fetchWithConnectionRetry(this.fetch, url, {
@@ -340,7 +333,7 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
       }
     }, {
       onRetry: ({ error, retry, maxRetries, delayMs }) => {
-        logger.warn(`[Chatgpt][Gemini] 连接失败 (${error.code || error.message})，${delayMs / 1000} 秒后进行第 ${retry}/${maxRetries} 次重试`)
+        console.warn(`[Chatgpt][Gemini] 连接失败 (${error.code || error.message})，${delayMs / 1000} 秒后进行第 ${retry}/${maxRetries} 次重试`)
       }
     })
     // 记录单次请求耗时，便于排查响应速度与重试累积的延迟。
@@ -363,7 +356,7 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
      */
     let response = await result.json()
     if (this.debug) {
-      logger.info("response: " + JSON.stringify(response, null, 2))
+      console.info("response: " + JSON.stringify(response, null, 2))
     }
 
     // 检查响应中是否包含错误
@@ -398,10 +391,10 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
         const cacheReadInfo = reportedCacheReadTokens == null
           ? ''
           : ` | 缓存命中(${cacheReadTokens}, ${cacheHitRate.toFixed(1)}%)`;
-        logger.info(`[Chatgpt][Gemini] 输入Token(${numTokens})${maxTokens ? ` | 回复上限(${maxTokens})` : ''} | 回答Token(${outTokens})${reasoningInfo} | 累计Token(${totalTokenCount})${cacheReadInfo}`);
+        console.info(`[Chatgpt][Gemini]${this.providerName ? `[${this.providerName}]` : ''} 输入Token(${numTokens})${maxTokens ? ` | 回复上限(${maxTokens})` : ''} | 回答Token(${outTokens})${reasoningInfo} | 累计Token(${totalTokenCount})${cacheReadInfo}`);
       }
     } catch (err) {
-      logger.info(`[Chatgpt][Gemini] 打印 Token 日志失败: ${err.message}`);
+      console.info(`[Chatgpt][Gemini] 打印 Token 日志失败: ${err.message}`);
     }
 
     if (response.promptFeedback?.blockReason) throw Object.assign(new Error(`模型拒绝回答：${response.promptFeedback.blockReason}`), { noRetry: true })
@@ -461,43 +454,31 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
         .map(part => part.functionCall?.thoughtSignature)
         .filter(sig => sig !== undefined && sig !== null)
 
-      const replyText = responseContent.parts.find(i => i.text)?.text
+      // 工具轮附带文本：归一化后以合并转发立即单独外发，不再裸发群消息；
+      // 独白/思考标签会被重归类进 thinking 通道，不丢失内容
+      const replyText = responseContent.parts.find(i => i.text && i.thought !== true)?.text
+      let roundThinking = ''
       if (replyText && replyText.trim()) {
-        // send reply first
-        // logger.info('[chatgpt]functionCall附加的对话text: ' + replyText.trim())
-
-        if (opt.sf_markdownPic) {
-          // sf图片模式
-          try {
-            if (replyText.trim()) {
-              const userMsg = this.e.img ? this.e.img.map(url => `<img src="${url}" width="256">`).join('\n') + "\n\n" + this.e.msg_bak_2 : this.e.msg_bak_2;
-              const { markdown_screenshot } = await import('../../siliconflow-plugin/utils/markdownPic.js')
-              const img = await markdown_screenshot(this.e.user_id, this.e.self_id, userMsg, this.redactPrivateNumber(replyText.trim()));
-              this.e.reply({ ...img, origin: true }, true)
-            }
-          } catch (err) {
-            logger.error('[chatgpt][functionCall附加的对话text]sf图片模式错误\n' + err)
-            opt.replyPureTextCallback && await opt.replyPureTextCallback(replyText.trim())
-          }
-        }
-        else {
-          if (replyText.length > 1000) {
-            // if (opt.auto_makeForwardMsg && replyText.trim()?.length > opt.auto_makeForwardMsg) {
-            this.e.reply(await makeForwardMsg(this.e, splitString_Enter(this.redactPrivateNumber(replyText.trim()), opt.auto_makeForwardMsg), `Tool回复 @${this.e.sender.card || this.e.sender.nickname}`));
-            // }
-            // else {
-            //   opt.replyPureTextCallback && await opt.replyPureTextCallback(replyText.trim())
-            // }
-          } else {
-            logger.info("[chatgpt][functionCall附加的对话text] Processing...")
-            this.e.reply((await convertFacesAndCQCode(this.redactPrivateNumber(replyText.trim()), Config.enableRobotAt, Config.isProcessCQAtCode, Config.removeCQCodeFocus, this.e)), true);
-          }
+        // 走统一的工具轮文本外发：归一化后以合并转发单独发出，
+        // 不再按 sf 图片 / 长文本两分支裸发群消息。
+        // 脱敏保留本仓约束：这条路径不经 replyPureTextCallback，需自行过一遍号码脱敏。
+        const normalized = normalizeModelText(replyText, {
+          toolNames,
+          inToolRound: true
+        })
+        roundThinking = normalized.thinking
+        if (normalized.text) {
+          await sendToolRoundTextForwardMsg(this.e, [{
+            text: this.redactPrivateNumber(normalized.text),
+            provider: 'Gemini',
+            round: opt.toolChain.depth + 1
+          }])
         }
       }
       let /** @type {FunctionResponse[]} **/ fcResults = []
       const toolForwardRecords = []
       for (let fc of functionCall) {
-        logger.info(`[Chatgpt][Gemini] execution function: ${JSON.stringify(fc)}`)
+        console.info(`[Chatgpt][Gemini] execution function: ${JSON.stringify(fc)}`)
         const funcName = fc.name
         const toolArgsForForward = _.cloneDeep(fc.args || {})
         let chosenTool = this.tools.find(t => t.name === funcName)
@@ -538,9 +519,9 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
               mode: 'gemini'
             })
             functionResponse.response.content = await chosenTool.func(args, this.e)
-            logger.info(`[Chatgpt][Gemini] function ${fc.name} execution result: ${JSON.stringify(functionResponse.response.content)}`)
+            console.info(`[Chatgpt][Gemini] function ${fc.name} execution result: ${JSON.stringify(functionResponse.response.content)}`)
           } catch (err) {
-            logger.error(err)
+            console.error(err)
             functionResponse.response.content = {
               error: `Function execute error: ${err.message}`
             }
@@ -583,7 +564,8 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
       // 递归直到返回text
       // 先把这轮的消息存下来
       await this.upsertMessage(getMessageForSave(thisMessage))
-      responseContent = handleSearchResponse(responseContent).responseContent
+      const handled = handleSearchResponse(responseContent)
+      responseContent = handled.responseContent
       const respMessage = Object.assign(responseContent, {
         id: idModel,
         parentMessageId: idThis
@@ -591,7 +573,13 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
       await this.upsertMessage(respMessage)
 
       // 工具结果仅在当前请求的历史缓冲中续接。
-      return await this.sendMessage('', responseOpt)
+      const toolResult = await this.sendMessage('', responseOpt)
+      // 思考内容跨工具轮累积：本轮思考（含被重归类的独白）拼在后续递归结果之前，保持时间顺序
+      const roundThinkingText = roundThinking + (handled.thinking || '')
+      if (roundThinkingText) {
+        toolResult.thinking_text = roundThinkingText + (toolResult.thinking_text || '')
+      }
+      return toolResult
     }
     if (responseContent) {
       await this.upsertMessage(getMessageForSave(thisMessage))
@@ -601,7 +589,7 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
       })
       await this.upsertMessage(respMessage)
     }
-    let { final } = handleSearchResponse(responseContent)
+    let { final, thinking } = handleSearchResponse(responseContent)
     try {
       if (groundingMetadata?.groundingChunks) {
         final += '\n参考资料\n'
@@ -609,14 +597,15 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
           // final += `[${chunk.web.title}](${chunk.web.uri})\n`
           final += `[${chunk.web.title}]\n`
         })
-        logger.info('[Chatgpt][Gemini Grounding] 搜索查询: ' + groundingMetadata.webSearchQueries.join(', '));
+        console.info('[Chatgpt][Gemini Grounding] 搜索查询: ' + groundingMetadata.webSearchQueries.join(', '));
       }
     } catch (err) {
-      logger.warn(err)
+      console.warn(err)
     }
 
     return {
       text: final,
+      thinking_text: thinking,
       conversationId: '',
       parentMessageId: idThis,
       id: idModel
@@ -775,19 +764,32 @@ function stripGeminiFunctionCallParts(content) {
   }
 }
 
+/**
+ * 拆分正式回复与思考内容（Gemini 思考 part 形如 { text, thought: true }）
+ * @param {Content} responseContent
+ * @returns {{final: string, thinking: string, responseContent}}
+ */
 function handleSearchResponse(responseContent) {
   let final = ''
+  let thinking = ''
 
   // 如果 responseContent 不存在或没有 parts,直接返回
   if (!responseContent || !responseContent.parts) {
     return {
       final,
+      thinking,
       responseContent
     }
   }
 
   // 遍历每个 part 并处理
   responseContent.parts = responseContent.parts.map((part) => {
+    // 思考 part 只收集到 thinking，不并入正式回复；part 原样返回，保证 thoughtSignature 与历史回放语义不变
+    if (part.thought === true) {
+      if (typeof part.text === 'string') thinking += part.text
+      return { ...part }
+    }
+
     let newText = ''
 
     if (part.text) {
@@ -818,6 +820,7 @@ function handleSearchResponse(responseContent) {
 
   return {
     final,
+    thinking,
     responseContent
   }
 }
