@@ -1612,7 +1612,7 @@ export function supportGuoba() {
         {
           field: 'getPixiv18Tool',
           label: '工具调整-Pixiv搜图18+',
-          bottomHelpMessage: '↑ 开启后 Pixiv搜图工具 可以搜索并发送18+图片功能',
+          bottomHelpMessage: '↑ 开启后 Pixiv搜图工具 可以搜索并发送18+图片功能。仅对 Bot 主人生效：开关打开但由其他人（群友/私聊）触发时，仍按全年龄搜索。仅需给主人看涩图时开启即可。',
           component: 'Switch'
         },
         {
