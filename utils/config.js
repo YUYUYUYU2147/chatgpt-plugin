@@ -328,6 +328,8 @@ const defaultConfig = {
   whitelist: [],
   blacklist: [],
   stealImgWhitelist: [],
+  // 是否开放 #gpt删图 指令（删除已偷存的表情图）。破坏性操作，默认关闭。
+  enableDeleteEmojiImg: false,
   ttsRegex: '/匹配规则/匹配模式',
   slackUserToken: '',
   slackBotUserToken: '',

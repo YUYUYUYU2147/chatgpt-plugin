@@ -1544,6 +1544,12 @@ export function supportGuoba() {
           component: 'Switch'
         },
         {
+          field: 'enableDeleteEmojiImg',
+          label: '工具新增-删表情',
+          bottomHelpMessage: '开启 #gpt删图 指令，可删除 #gpt偷图 已保存的表情图（位于 ./data/chatgpt/sendEmojiTool/）。用法：① 引用消息来删 —— 引用当初那张图的消息，新图老图都能删（推荐）；② #gpt删图 编号（偷图成功时会回复一个4位编号，仅新图有）；③ #gpt删图 列出所有分类；④ #gpt删图 分类名 列出该分类下的图；⑤ #gpt删图 分类名 序号 删除指定的那张。删除是不可恢复的，且仅 Bot 主人可用。',
+          component: 'Switch'
+        },
+        {
           field: 'stealImgWhitelist',
           label: '偷图白名单',
           bottomHelpMessage: '设置可使用 #偷图 指令的白名单，格式与对话白名单相同：群号用英文逗号分割(例如群号：123456,654321)；如果想指定某QQ号则在QQ号前面添加^(例如QQ号：^123456)；如果想指定某群的某QQ号则使用 群号^qq 的格式(例如：123456^123456)。不填则所有人可用。',

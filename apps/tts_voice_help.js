@@ -149,6 +149,13 @@ export class voicechangehelp extends plugin {
                     fnc: 'save_EmojiImg',
                 },
                 {
+                    // 删除是破坏性操作，权限只给主人，不套用偷图那个白名单 ——
+                    // 白名单是「谁能往里加」，用在「谁能删」上太松。
+                    reg: /^#gpt删(图|表情包?)(?:\s+(.*))?$/i,
+                    fnc: 'delete_EmojiImg',
+                    permission: 'master',
+                },
+                {
                     reg: /^#(chat)?gptsf语音模型(创建|删除|列表|上传|新增)$/i,
                     fnc: 'handleSfVoiceManage',
                     permission: 'master'
@@ -560,7 +567,18 @@ export class voicechangehelp extends plugin {
                 }
                 const imageUrl = await reNameAndSavePic(imgResponse, e.img[0], directory);
                 if (imageUrl) {
-                    e.reply(`偷图成功！\n已将表情包储存在 [${emotion}] 文件夹中~\nAI简评: ${analysis}`, true);
+                    // 登记索引：删图时靠它把「那条偷图消息」和「本地这个文件」对上。
+                    // 原消息里的图是 NapCat 临时地址，本地是 sha256 命名的文件，
+                    // 两者没有任何关联，不登记就没法从引用消息反查该删哪个文件。
+                    const shortId = saveEmojiIndex(e, emotion, path.basename(imageUrl));
+                    const suffix = shortId
+                        ? `\n编号: ${shortId}（发 #gpt删图 ${shortId} 或直接引用本条消息即可删除）`
+                        : '';
+                    const replyRes = await e.reply(`偷图成功！\n已将表情包储存在 [${emotion}] 文件夹中~\nAI简评: ${analysis}${suffix}`, true);
+                    // 记下 Bot 这条「偷图成功」消息的 ID，之后引用它也能反查到文件
+                    if (shortId) {
+                        updateEmojiIndexReplyMsgId(shortId, replyRes?.message_id || replyRes?.messageId || replyRes?.data?.message_id);
+                    }
                 } else {
                     e.reply(`保存表情包失败了呢QAQ`, true);
                 }
@@ -572,6 +590,310 @@ export class voicechangehelp extends plugin {
             e.reply('偷图过程中发生错误：' + err.message, true);
         }
         return true;
+    }
+
+    /**
+     * 按引用消息里的图片反查已存文件 —— 老图（索引机制之前偷的）只能走这条路。
+     *
+     * 依据：偷图时本地文件名是 sha256(原图URL) 的十六进制（见 reNameAndSavePic），
+     * 而原图 URL 就在那条含图消息里。所以拿到引用消息的图地址，重算哈希，
+     * 在所有分类目录里找同名前缀的文件即可，不必依赖索引。
+     *
+     * 前提：引用的必须是**当初那张图的消息**（自己发的图、群友发的图都行），
+     * 引用「偷图成功」那条纯文字消息拿不到图，只能走索引。
+     */
+    async findEmojiBySourceImage(e, rootDir) {
+        await parseSourceImg(e);
+        const url = e.img?.[0];
+        if (!url || typeof url !== 'string') return null;
+
+        // URL 可能被平台转义过（如 %2F），两种形态都试一遍
+        const hashOf = (u) => crypto.createHash('sha256').update(u).digest('hex');
+        const hashes = new Set([hashOf(url)]);
+        try {
+            const decoded = decodeURIComponent(url);
+            if (decoded !== url) hashes.add(hashOf(decoded));
+        } catch (_) { }
+
+        for (const dir of this.listEmojiDirs(rootDir)) {
+            for (const f of this.listEmojiImgs(path.join(rootDir, dir))) {
+                const base = f.replace(/\.[^.]+$/, '');
+                if (hashes.has(base)) return { emotion: dir, file: f };
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 按图片内容反查老图。
+     *
+     * 老文件是 sha256(原图 URL) 命名，URL 一过期/换 CDN，哈希就对不上；
+     * 这里改成下载引用消息里的图，按**文件内容** sha256 比对本地文件。
+     * 只比同尺寸的文件，避免无谓读取大图。
+     */
+    async findEmojiByContent(e, rootDir) {
+        const url = e.img?.[0];
+        if (!url || typeof url !== 'string') return null;
+
+        let remote;
+        try {
+            const res = await fetch(url);
+            if (!res.ok) return null;
+            remote = Buffer.from(await res.arrayBuffer());
+        } catch (err) {
+            logger.debug('删图内容比对：下载引用图失败', err?.message || err);
+            return null;
+        }
+        if (!remote.length) return null;
+        const remoteHash = crypto.createHash('sha256').update(remote).digest('hex');
+
+        for (const dir of this.listEmojiDirs(rootDir)) {
+            for (const f of this.listEmojiImgs(path.join(rootDir, dir))) {
+                const file = path.join(rootDir, dir, f);
+                try {
+                    if (fs.statSync(file).size !== remote.length) continue;
+                    const localHash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+                    if (localHash === remoteHash) return { emotion: dir, file: f };
+                } catch (_) { /* 单个文件读失败不影响其它候选 */ }
+            }
+        }
+        return null;
+    }
+
+    /** 取「被引用/回复的那条消息」原始对象，供 ID 与文本两条反查路径共用 */
+    async getSourceMessage(e) {
+        try {
+            if (e.reply_id) return await e.getReply(e.reply_id);
+            if (e.source) {
+                const item = e.isGroup
+                    ? (await e.group.getChatHistory(e.source.seq, 1)).pop()
+                    : (await e.friend.getChatHistory(e.source.time, 1)).pop();
+                return item || null;
+            }
+        } catch (err) {
+            logger.debug('获取引用消息失败：', err?.message || err);
+        }
+        return null;
+    }
+
+    /**
+     * 取「被引用/回复的那条消息」的 message_id。
+     * 删图要靠它反查索引 —— 引用的是哪条偷图消息，决定删哪张图。
+     */
+    async getSourceMessageId(e) {
+        const obj = await this.getSourceMessage(e);
+        return obj?.message_id || obj?.message?.message_id || e.source?.message_id || null;
+    }
+
+    /** 真正执行删除：校验文件确实在 rootDir 下，删完顺手清掉索引 */
+    doDeleteEmoji(e, rootDir, emotion, file) {
+        const dirPath = this.safeEmojiDir(rootDir, emotion);
+        if (!dirPath) {
+            e.reply(`分类「${emotion}」不存在，记录可能已失效`, true);
+            removeEmojiIndexByFile(emotion, file);
+            return false;
+        }
+        const target = path.join(dirPath, file);
+        if (path.dirname(target) !== dirPath) {
+            e.reply('记录里的文件名不合法，已拒绝删除', true);
+            return false;
+        }
+        if (!fs.existsSync(target)) {
+            e.reply(`文件已经不在了（${emotion}/${file}）`, true);
+            removeEmojiIndexByFile(emotion, file);
+            return false;
+        }
+        try {
+            fs.unlinkSync(target);
+        } catch (err) {
+            logger.error('删除表情图失败：', err);
+            e.reply(`删除失败：${err.message}`, true);
+            return false;
+        }
+        removeEmojiIndexByFile(emotion, file);
+        const left = this.countEmojiImgs(dirPath);
+        e.reply(`已删除 ${emotion}/${file}\n该分类还剩 ${left} 张`, true);
+        return true;
+    }
+
+    /**
+     * #gpt删图 —— 删除 #gpt偷图 存下的表情图。
+     *
+     * 三段式，逐级收窄，避免一条指令就把整个目录删了：
+     *   #gpt删图            列出所有情绪分类及各自图片数
+     *   #gpt删图 <分类>      列出该分类下的图（序号 + 文件名）
+     *   #gpt删图 <分类> <序号> 删除指定的那张
+     *
+     * 刻意不做的事：不提供「整目录删除」「按分类删除」「回收站」。
+     * 前两者一次手滑就没了，后者要额外占磁盘且和偷图目录的语义纠缠。
+     * 想批量清理请直接进服务器删文件夹。
+     */
+    async delete_EmojiImg(e) {
+        if (!Config.enableDeleteEmojiImg) {
+            e.reply('删图功能未开启，请在锅巴中开启「工具新增-删表情」', true);
+            return false;
+        }
+
+        const rootDir = path.join(process.cwd(), 'data', 'chatgpt', 'sendEmojiTool');
+        if (!fs.existsSync(rootDir)) {
+            e.reply('表情库还不存在，先用 #gpt偷图 存几张吧~', true);
+            return false;
+        }
+
+        const args = String(e.msg || '')
+            .replace(/^#gpt删(图|表情包?)/i, '')
+            .trim();
+
+        // —— 快捷方式一：引用某条消息来删 ——
+        // 三条路径：新图靠消息 ID 索引；引用「偷图成功」文字消息时从文本里的
+        //           4 位编号反查；老图靠原图 URL 哈希（引用含图的那条消息）。
+        const src = !args ? await this.getSourceMessage(e) : null;
+        const msgId = src?.message_id || src?.message?.message_id || e.source?.message_id || null;
+        if (!args && (src || msgId)) {
+            if (msgId) {
+                const rec = findEmojiIndexByMsgId(e, msgId);
+                if (rec) return this.doDeleteEmoji(e, rootDir, rec.emotion, rec.file);
+            }
+
+            // 引用的是「偷图成功」那条纯文字消息：正文里有「编号: XXXX」
+            const text = (Array.isArray(src?.message) ? src.message : [])
+                .filter(v => v?.type === 'text')
+                .map(v => v.text || '')
+                .join(' ');
+            const shortId = text.match(/编号[:：]\s*([2-9A-HJ-NP-Z]{4,})/i)?.[1];
+            if (shortId) {
+                const rec = findEmojiIndex(shortId);
+                if (rec) return this.doDeleteEmoji(e, rootDir, rec.emotion, rec.file);
+            }
+
+            const byHash = await this.findEmojiBySourceImage(e, rootDir);
+            if (byHash) return this.doDeleteEmoji(e, rootDir, byHash.emotion, byHash.file);
+
+            // URL 哈希对不上（老图 URL 过期/换 CDN）时，再按图片内容比对
+            const byContent = await this.findEmojiByContent(e, rootDir);
+            if (byContent) return this.doDeleteEmoji(e, rootDir, byContent.emotion, byContent.file);
+
+            e.reply('没找到对应的已存图片。可以试试：\n1. 引用「偷图成功」那条文字消息（需本指令开启后偷的）\n2. 引用当初那张图的消息本身\n3. 或者用 #gpt删图 分类名 序号', true);
+            return false;
+        }
+
+        // —— 快捷方式二：#gpt删图 <短ID> ——
+        if (args && !/\s/.test(args)) {
+            const rec = findEmojiIndex(args.toUpperCase());
+            if (rec) return this.doDeleteEmoji(e, rootDir, rec.emotion, rec.file);
+            // 不是短 ID 就继续按「分类名」往下走，不在这里报错
+        }
+
+        // —— 第一段：列出所有分类 ——
+        if (!args) {
+            const lines = [];
+            for (const name of this.listEmojiDirs(rootDir)) {
+                lines.push(`${name}（${this.countEmojiImgs(path.join(rootDir, name))} 张）`);
+            }
+            if (!lines.length) {
+                e.reply('表情库是空的，先用 #gpt偷图 存几张吧~', true);
+                return false;
+            }
+            e.reply([
+                `表情库共 ${lines.length} 个分类：\n${lines.join('\n')}`,
+                '用法：\n#gpt删图 分类名 —— 查看该分类下的图片\n#gpt删图 分类名 序号 —— 删除指定的那张'
+            ], true);
+            return false;
+        }
+
+        const parts = args.split(/\s+/).filter(Boolean);
+        const [maybeDir, maybeIndex] = parts;
+
+        // 分类名直接来自用户输入，必须挡住 ../ 这类路径穿越
+        const dirPath = this.safeEmojiDir(rootDir, maybeDir);
+        if (!dirPath) {
+            e.reply(`没有名为「${maybeDir}」的分类，用 #gpt删图 看看有哪些分类吧`, true);
+            return false;
+        }
+
+        const files = this.listEmojiImgs(dirPath);
+
+        // —— 第二段：列出该分类下的图 ——
+        if (parts.length === 1 || maybeIndex === undefined) {
+            if (!files.length) {
+                e.reply(`「${maybeDir}」分类下还没有图片`, true);
+                return false;
+            }
+            const MAX = 40;
+            const shown = files.slice(0, MAX).map((f, i) => `${i + 1}. ${f}`);
+            const more = files.length > MAX ? `\n…… 还有 ${files.length - MAX} 张，用序号可继续翻` : '';
+            e.reply([
+                `「${maybeDir}」共 ${files.length} 张：\n${shown.join('\n')}${more}`,
+                `删除其中一张：#gpt删图 ${maybeDir} 序号（删除不可恢复）`
+            ], true);
+            return false;
+        }
+
+        // —— 第三段：执行删除 ——
+        const idx = Number(maybeIndex);
+        if (!Number.isInteger(idx) || idx < 1 || idx > files.length) {
+            e.reply(`序号要在 1 ~ ${files.length} 之间，或用 #gpt删图 ${maybeDir} 看看有哪些`, true);
+            return false;
+        }
+
+        const target = path.join(dirPath, files[idx - 1]);
+        try {
+            fs.unlinkSync(target);
+        } catch (err) {
+            logger.error('删除表情图失败：', err);
+            e.reply(`删除失败：${err.message}`, true);
+            return false;
+        }
+
+        const left = this.countEmojiImgs(dirPath);
+        e.reply(`已删除 ${maybeDir}/${files[idx - 1]}\n该分类还剩 ${left} 张`, true);
+        return true;
+    }
+
+    /** 列出表情分类目录名（只取目录，按名排序，保证列表顺序稳定） */
+    listEmojiDirs(rootDir) {
+        try {
+            return fs.readdirSync(rootDir, { withFileTypes: true })
+                .filter(d => d.isDirectory())
+                .map(d => d.name)
+                .sort();
+        } catch (err) {
+            return [];
+        }
+    }
+
+    /** 列出某分类下的图片文件名 */
+    listEmojiImgs(dirPath) {
+        try {
+            return fs.readdirSync(dirPath, { withFileTypes: true })
+                .filter(d => d.isFile() && /\.(jpg|jpeg|png|gif|webp)$/i.test(d.name))
+                .map(d => d.name)
+                .sort();
+        } catch (err) {
+            return [];
+        }
+    }
+
+    countEmojiImgs(dirPath) {
+        return this.listEmojiImgs(dirPath).length;
+    }
+
+    /**
+     * 把用户输入的分类名解析成目录路径，解析不出来返回 null。
+     * 不直接 path.join(rootDir, 用户输入) —— 那等于把删除接口开放给路径穿越，
+     * `#gpt删图 ../../..` 就能删到仓库外的东西去。
+     */
+    safeEmojiDir(rootDir, name) {
+        if (!name) return null;
+        if (name.includes('/') || name.includes('\\') || name.includes('..')) return null;
+        const full = path.join(rootDir, name);
+        if (path.dirname(full) !== rootDir) return null;
+        try {
+            if (!fs.statSync(full).isDirectory()) return null;
+        } catch (err) {
+            return null;
+        }
+        return full;
     }
 
     /** ^#tts(语音)?(替换)?帮助 */
@@ -1247,6 +1569,109 @@ ${userSetting.useTTS === true ? '当前语音模式为' + Config.ttsMode : ''}`
 }
 
 /** 下载好的图片重命名并存档在directory */
+/* ---------------- 偷图索引 ----------------
+ * 为什么需要：偷图时本地文件名是 sha256(url) 的哈希（见 reNameAndSavePic），
+ * 而原消息里是 NapCat 的临时图地址，两边毫无关联。没有索引就无法从「用户引用的
+ * 那条偷图消息」反查「本地该删哪个文件」，只能靠翻分类 + 数序号。
+ *
+ * 索引只服务删除，结构保持最简：
+ *   { 短ID: { msgId, emotion, file } }
+ * 存 .index.json（点开头，默认隐藏），与表情图同目录，便于一起删。
+ */
+
+const EMOJI_INDEX_FILE = path.join(process.cwd(), 'data', 'chatgpt', 'sendEmojiTool', '.index.json');
+
+function readEmojiIndex() {
+    try {
+        if (!fs.existsSync(EMOJI_INDEX_FILE)) return {};
+        const raw = JSON.parse(fs.readFileSync(EMOJI_INDEX_FILE, 'utf-8'));
+        return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    } catch (err) {
+        logger.warn('[偷图索引] 读取失败，已忽略：', err?.message || err);
+        return {};
+    }
+}
+
+function writeEmojiIndex(index) {
+    try {
+        fs.mkdirSync(path.dirname(EMOJI_INDEX_FILE), { recursive: true });
+        fs.writeFileSync(EMOJI_INDEX_FILE, JSON.stringify(index, null, 2), 'utf-8');
+        return true;
+    } catch (err) {
+        logger.warn('[偷图索引] 写入失败：', err?.message || err);
+        return false;
+    }
+}
+
+/** 生成不重复的短 ID：用 base32 去掉容易读错的 0/1/I/O，4 位约 100 万种 */
+function genEmojiShortId(index) {
+    const ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+    for (let attempt = 0; attempt < 20; attempt++) {
+        let id = '';
+        for (let i = 0; i < 4; i++) {
+            id += ALPHABET[crypto.randomInt(ALPHABET.length)];
+        }
+        if (!index[id]) return id;
+    }
+    // 极端情况下（4 位空间耗尽）退回时间戳，保证一定能存下
+    return 'T' + Date.now().toString(36).toUpperCase().slice(-6);
+}
+
+function saveEmojiIndex(e, emotion, file) {
+    const index = readEmojiIndex();
+    const id = genEmojiShortId(index);
+    index[id] = {
+        msgId: e.reply_id || e.source?.message_id || e.message_id || '',
+        emotion,
+        file,
+        at: Date.now(),
+    };
+    return writeEmojiIndex(index) ? id : '';
+}
+
+/** 偷图成功后补记 Bot 回复消息的 ID：引用「偷图成功」那条文字消息也能删 */
+function updateEmojiIndexReplyMsgId(shortId, msgId) {
+    if (!shortId || !msgId) return false;
+    const index = readEmojiIndex();
+    const rec = index[String(shortId).toUpperCase()];
+    if (!rec) return false;
+    rec.replyMsgId = String(msgId);
+    return writeEmojiIndex(index);
+}
+
+function findEmojiIndex(shortId) {
+    const rec = readEmojiIndex()[String(shortId || '').toUpperCase()];
+    return rec && rec.emotion && rec.file ? rec : null;
+}
+
+/** 引用消息查索引：同一条消息可能对应多个短 ID（重复偷同一张图），取最近一个 */
+function findEmojiIndexByMsgId(e, msgId) {
+    if (!msgId) return null;
+    const idStr = String(msgId);
+    const index = readEmojiIndex();
+    let best = null;
+    for (const [id, rec] of Object.entries(index)) {
+        if ((String(rec?.msgId || '') === idStr || String(rec?.replyMsgId || '') === idStr)
+            && rec.emotion && rec.file) {
+            if (!best || (rec.at || 0) > (best.at || 0)) best = { ...rec, id };
+        }
+    }
+    return best;
+}
+
+/** 文件已删掉或分类消失后，把对应索引条目清掉，避免越积越多 */
+function removeEmojiIndexByFile(emotion, file) {
+    const index = readEmojiIndex();
+    let changed = false;
+    for (const [id, rec] of Object.entries(index)) {
+        if (rec?.emotion === emotion && rec?.file === file) {
+            delete index[id];
+            changed = true;
+        }
+    }
+    if (changed) writeEmojiIndex(index);
+}
+
 async function reNameAndSavePic(response, url, directory) {
     try {
         if (!fs.existsSync(directory))
