@@ -50,6 +50,8 @@ export class GetPixivApiLoliconTool extends AbstractTool {
             // R-18 只对 Bot 主人生效：锅巴开关本身由主人控制，但开关一开，
             // 群里任何人 / 私聊任何人都能借 bot 的手把 18+ 图发出来。
             // 因此这里再叠一层 e.isMaster 判定 —— 开关 + 主人，两个条件同时满足才放开。
+            // 注：搜图工具整体已在 core.js 限定为主人专用，这里属纵深防御。
+            //     下面的降级分支在当前注册条件下不可达，保留以防注册条件以后放宽。
             const allowR18 = !!Config.getPixiv18Tool && !!e?.isMaster
             // 开关已开但当前不是主人 = 这次搜索被降级成全年龄，出图后要补一句说明，
             // 否则对方只会觉得「开了开关怎么还是这种图」，不知道是被权限挡了。

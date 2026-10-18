@@ -1612,13 +1612,13 @@ export function supportGuoba() {
         {
           field: 'getPixivTool',
           label: '工具新增-Pixiv搜图',
-          bottomHelpMessage: '新增工具提供给AI搜索并发送Pixiv的插图',
+          bottomHelpMessage: '新增工具提供给AI搜索并发送Pixiv的插图。⚠ 仅 Bot 主人生效：群友/私聊其他人发消息时该工具不会挂载，AI 无法搜图。',
           component: 'Switch'
         },
         {
           field: 'getPixiv18Tool',
           label: '工具调整-Pixiv搜图18+',
-          bottomHelpMessage: '↑ 开启后 Pixiv搜图工具 可以搜索并发送18+图片功能。仅对 Bot 主人生效：开关打开但由其他人（群友/私聊）触发时，仍按全年龄搜索。仅需给主人看涩图时开启即可。',
+          bottomHelpMessage: '↑ 开启后 Pixiv搜图工具 可以搜索并发送18+图片功能。搜图工具本身已限定仅 Bot 主人生效，本开关只决定主人搜到的范围是否放开 18+。',
           component: 'Switch'
         },
         {

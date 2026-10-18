@@ -1142,7 +1142,11 @@ async function collectTools(e) {
     { condition: Config.agent_LocalSandboxSwitch && (!Config.localSandboxMasterOnly || e.isMaster), ToolClass: LocalSandboxTool },
     { condition: Config.agent_RemoteSandboxSwitch && (!Config.remoteSandboxMasterOnly || e.isMaster), ToolClass: RemoteSandboxTool },
     { condition: Config.agent_VercelSandboxSwitch && (!Config.vercelSandboxMasterOnly || e.isMaster), ToolClass: VercelSandboxTool },
-    { condition: Config.getPixivTool, ToolClass: GetPixivApiLoliconTool },
+    // Pixiv 搜图：主人专用。
+    // 这个工具本质是「按标签搜插图」，而 bot 的搜图结果会直接发到当前会话里 ——
+    // 群友能用就等于群友能借 bot 的手翻涩图标签。之前只对 18+ 做了主人限定，
+    // 全年龄那部分仍然对所有人开放，这里一并收到主人。
+    { condition: Config.getPixivTool && e.isMaster, ToolClass: GetPixivApiLoliconTool },
     { condition: Config.switch_EmojiTool, ToolClass: EmojiTool },
     { condition: Config.enableMemory, ToolClass: MemoryTool },
     { condition: Config.enableMemory, ToolClass: UserProfileTool },
