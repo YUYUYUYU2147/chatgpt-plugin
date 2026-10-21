@@ -12,18 +12,15 @@ let saves = 0
 Object.defineProperties(config, {
   getConfig: { value: () => config },
   save: { value: () => { saves++; return true } },
-  // Config 是 Proxy，commit 由 get 拦截提供；mock 需显式补上，
-  // guoba.support.js 保存表单时走的是 Config.commit 而非 save
-  commit: { value: (candidate) => { saves++; Object.assign(config, candidate); return true } }
+  // 锅巴保存走 Config.commit(candidate)（Proxy 的 get 分支），不是 Config.save：
+  // 桩缺它时 setConfigData 会以「配置保存失败：Config.commit is not a function」判红。
+  commit: { value: candidate => { saves++; Object.assign(config, candidate); return true } }
 })
-// 上游 guoba.support.js 还会用到 providerDefaults（锅巴表单默认值），mock 需一并提供，
-// 否则 ESM 具名导入在 mock 环境下直接抛 "does not provide an export named"。
-mock.module('../utils/config.js', {
-  namedExports: {
-    Config: config,
-    providerDefaults: { api: {}, responses: {}, claude: {}, gemini: {} }
-  }
-})
+// `guoba.support.js` 会 import `{ Config, providerDefaults }`：桩里缺具名导出时注册不报错，
+// 只在真正加载该模块时以 SyntaxError 炸出（本套件要靠 supportGuoba() 验证图谱开关面板）。
+// providerDefaults 只被读成各字段的 defaultValue，空对象够用。
+const providerDefaults = { api: {}, responses: {}, claude: {}, gemini: {} }
+mock.module('../utils/config.js', { namedExports: { Config: config, providerDefaults } })
 mock.module('../../../lib/plugins/plugin.js', { defaultExport: class { constructor(options) { Object.assign(this, options) } } })
 let renderResult
 let renderCalls

@@ -81,15 +81,15 @@ export class Entertainment extends plugin {
         }
       ]
     })
-    this.task = [
-      {
-        // 设置十分钟左右的浮动
-        cron: '0 ' + Math.ceil(Math.random() * 10) + ' 7-23/' + Config.helloInterval + ' * * ?',
-        // cron: '*/2 * * * *',
-        name: 'ChatGPT主动随机说话',
-        fnc: this.sendRandomMessage.bind(this)
-      }
-    ]
+    // this.task = [
+    //   {
+    //     // 设置十分钟左右的浮动
+    //     cron: '0 ' + Math.ceil(Math.random() * 10) + ' 7-23/' + Config.helloInterval + ' * * ?',
+    //     // cron: '*/2 * * * *',
+    //     name: 'ChatGPT主动随机说话',
+    //     fnc: this.sendRandomMessage.bind(this)
+    //   }
+    // ]
     this.reply = async (msg, quote, data) => {
       if (!Config.enableMd) {
         return e.reply(msg, quote, data)
@@ -347,8 +347,12 @@ ${translateLangLabels}
   async combineEmoj(e) {
     if (!Config.emojiBaseSwitch)
       return false;
-    let left = e.msg.codePointAt(0).toString(16).toLowerCase()
-    let right = e.msg.codePointAt(2).toString(16).toLowerCase()
+    // 按字素切分，避免肤色修饰符 / 变体选择符 / ZWJ 组合被误判成两个表情
+    const graphemes = [...new Intl.Segmenter('zh', { granularity: 'grapheme' }).segment(e.msg)].map(item => item.segment)
+    if (graphemes.length !== 2)
+      return false
+    let left = graphemes[0].codePointAt(0).toString(16).toLowerCase()
+    let right = graphemes[1].codePointAt(0).toString(16).toLowerCase()
     if (left === right) {
       return false
     }
@@ -380,7 +384,7 @@ ${translateLangLabels}
       }
     }
     if (!url) {
-      await this.reply('不支持合成', true)
+      // 查不到组合时静默跳过，不再往群里发提示
       return false
     }
     // let response = await fetch(url)

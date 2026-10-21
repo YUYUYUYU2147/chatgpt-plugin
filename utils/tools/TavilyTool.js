@@ -1,5 +1,7 @@
 import { AbstractTool } from './AbstractTool.js'
 import { Config } from '../config.js'
+import { UNTRUSTED_NOTICE, capForModel, clipForError } from './webContent.js'
+import { requestText } from './webFetchTransport.js'
 
 /** 使用 Tavily 搜索并获得结果摘要的工具 */
 export class TavilyTool extends AbstractTool {
@@ -107,23 +109,21 @@ export class TavilyTool extends AbstractTool {
         }
 
         try {
-            // 调用 Tavily API
-            const response = await fetch('https://api.tavily.com/search', {
+            // 调用 Tavily API：走共用传输层，取字节上限、拒绝跟随重定向与超时归一
+            const { status, ok, body } = await requestText('https://api.tavily.com/search', {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${tavilyKey}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(payload),
-                signal: AbortSignal.timeout(60000)
-            })
+                body: JSON.stringify(payload)
+            }, { timeoutMs: 60000 })
 
-            if (!response.ok) {
-                const errorText = await response.text()
-                throw new Error(`Tavily API error: ${errorText} (Status: ${response.status})`)
+            if (!ok) {
+                throw new Error(`Tavily API error: ${clipForError(body)} (Status: ${status})`)
             }
 
-            const data = await response.json()
+            const data = JSON.parse(body)
             const results = data.results || []
 
             if (!results.length) {
@@ -160,7 +160,8 @@ export class TavilyTool extends AbstractTool {
             // 如果启用了链接显示，添加使用提示
             const linkTip = '\n\n💡 提示: 如需了解详细内容，可使用网页提取工具获取完整页面信息。'
 
-            return finalResult + linkTip
+            // 摘要同样来自第三方网页：标成不可信数据，并与其他工具共用 20000 字符封顶
+            return capForModel(`Web search results from Tavily (${UNTRUSTED_NOTICE}):\n${finalResult}${linkTip}`)
 
         } catch (error) {
             console.error('Tavily search error:', error)

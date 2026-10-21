@@ -23,9 +23,26 @@ import {
 } from '../utils/paimonFuction.js'
 import sfApi from '../utils/tts/siliconflow.js';
 import { getOnebotFileOrMediaUrl } from '../utils/paimonFuction.js';
+import { EmojiTool } from '../utils/tools/EmojiTool.js';
 
 const paimonChuoYiChouSavePicDirectory = `${process.cwd()}/data/autoEmoticons/PaimonChuoYiChouPictures/savePics`
 const sleep_pai = (delay) => new Promise((resolve) => setTimeout(resolve, delay))
+
+/** 偷图可存放的情绪分类：直接复用 sendEmoji 工具的枚举，两处不会漂移 */
+const saveEmojiEmotions = EmojiTool.emotions
+/** 分类的中文含义，只喂给识图提示词；落库的仍是英文分类名 */
+const saveEmojiEmotionZh = {
+    happy: '开心/高兴', sad: '难过/伤心', angry: '生气/愤怒', love: '喜欢/爱意',
+    confused: '困惑/疑惑', tired: '疲惫/累', excited: '兴奋/激动', scared: '害怕/恐惧',
+    laugh: '大笑/爆笑', cry: '哭泣/流泪', cute: '可爱/卖萌', shy: '害羞/脸红',
+    thumbsup: '点赞/赞同', thinking: '思考/沉思', surprised: '惊讶/震惊', bored: '无聊/乏味',
+    cool: '酷/帅气', sick: '生病/不舒服', sleep: '睡觉/困', eat: '吃饭/美食'
+}
+/** 偷图指令，第三捕获组是指令后的提示文本（可为空）；规则注册与提示提取共用，避免改一处漏一处 */
+const stealEmojiCommandReg = /^#(chat)?gpt偷(图|表情包?)([\s\S]*)$/i
+/** 偷图回执与图片的关联键前缀；值是 { path, emotion, isNew }，随回执保留两周 */
+const emojiUndoRedisPrefix = 'CHATGPT:EMOJI_UNDO:'
+const emojiUndoExpireSeconds = 60 * 60 * 24 * 14
 
 export class voicechangehelp extends plugin {
     constructor() {
@@ -145,7 +162,7 @@ export class voicechangehelp extends plugin {
                     permission: 'master'
                 },
                 {
-                    reg: /^#gpt偷(图|表情包?)$/i,
+                    reg: stealEmojiCommandReg,
                     fnc: 'save_EmojiImg',
                 },
                 {
@@ -154,6 +171,11 @@ export class voicechangehelp extends plugin {
                     reg: /^#gpt删(图|表情包?)(?:\s+(.*))?$/i,
                     fnc: 'delete_EmojiImg',
                     permission: 'master',
+                },
+                {
+                    reg: /^#(chat)?gpt撤销偷(图|表情包?)$/i,
+                    fnc: 'undo_EmojiImg',
+                    permission: 'master'
                 },
                 {
                     reg: /^#(chat)?gptsf语音模型(创建|删除|列表|上传|新增)$/i,
@@ -508,7 +530,7 @@ export class voicechangehelp extends plugin {
         return false;
     }
 
-    /** /^#偷(图|表情包?)$/i */
+    /** stealEmojiCommandReg */
     async save_EmojiImg(e) {
         if (!await this.checkStealImgWhitelist(e)) return false;
         await parseSourceImg(e);
@@ -517,16 +539,13 @@ export class voicechangehelp extends plugin {
             return true;
         }
 
-        const emotions = [
-            'happy', 'sad', 'angry', 'love', 'confused', 'tired',
-            'excited', 'scared', 'laugh', 'cry', 'cute', 'shy',
-            'thumbsup', 'thinking', 'surprised', 'bored', 'cool',
-            'sick', 'sleep', 'eat'
-        ];
+        // 指令后的文本作为提示交给识图模型，例如「#gpt偷图 派蒙 困惑」
+        const hint = (String(e.msg || '').match(stealEmojiCommandReg)?.[3] || '').trim().slice(0, 100)
 
-        // e.reply('正在识别表情包并分析情感中...', true);
-        const systemPrompt = `分析这个表情包或图片的情感，从以下分类中选出一个最合适的分类：\n${emotions.join(', ')}\n\n请严格按以下格式回复：\n[分类]: 简短分析（10个字以内）\n例如：\nhappy: 看起来非常开心`;
-        let aiText = await recognitionResultsByGemini(e, (e.img || []), [], systemPrompt);
+        const emotionList = saveEmojiEmotions.map(em => `${em}${saveEmojiEmotionZh[em] ? `(${saveEmojiEmotionZh[em]})` : ''}`).join(', ')
+        const systemPrompt = `分析这个表情包或图片的情感，从以下分类中选出一个最合适的分类（括号内为中文含义）：\n${emotionList}\n\n用户可能附带一句提示，例如角色名或想放进的情绪（如“派蒙 困惑”）：\n1. 提示中明确点名了某个情绪（中文或英文），就以该情绪为准，即使图片看起来更像别的情绪；\n2. 提示中只有角色名或内容描述、没有情绪时，按图片本身判断；\n3. 提示与图片无关时忽略提示。\n\n请严格按以下格式回复（分类只能是上面列出的英文单词）：\n英文分类: 简短分析（10个字以内）\n例如：\nhappy: 看起来非常开心`;
+        // 显式传 prompt：不传时默认取 e.msg，等于把「#gpt偷图 派蒙 困惑」这串命令字一起喂给模型
+        let aiText = await recognitionResultsByGemini(e, (e.img || []), [], systemPrompt, { prompt: hint || '判断这张表情包属于哪个情绪分类' });
 
         let emotion = '';
         let analysis = '';
@@ -539,7 +558,7 @@ export class voicechangehelp extends plugin {
                 analysis = match[2].trim();
             } else {
                 // 如果格式不完全匹配，尝试在文本中寻找关键字
-                const foundEmotion = emotions.find(em => aiText.toLowerCase().includes(em));
+                const foundEmotion = saveEmojiEmotions.find(em => aiText.toLowerCase().includes(em));
                 if (foundEmotion) {
                     emotion = foundEmotion;
                     analysis = aiText.replace(new RegExp(foundEmotion, 'i'), '').trim();
@@ -547,7 +566,7 @@ export class voicechangehelp extends plugin {
             }
         }
 
-        if (!emotions.includes(emotion)) {
+        if (!saveEmojiEmotions.includes(emotion)) {
             // Gemini 在部分地区会返回 FAILED_PRECONDITION / User location is not supported。
             // 偷表情不应该因此失败：识别失败时兜底保存到 cute 分类。
             logger.warn(`[偷表情] 表情类别识别失败，已使用默认分类 cute：${aiText || '无返回'}`);
@@ -565,19 +584,30 @@ export class voicechangehelp extends plugin {
                     e.reply(`这图片超过10MB了，还是不要保存了吧QAQ`, true);
                     return true;
                 }
-                const imageUrl = await reNameAndSavePic(imgResponse, e.img[0], directory);
-                if (imageUrl) {
+                const saved = await reNameAndSavePic(imgResponse, e.img[0], directory);
+                if (saved?.filePath) {
                     // 登记索引：删图时靠它把「那条偷图消息」和「本地这个文件」对上。
                     // 原消息里的图是 NapCat 临时地址，本地是 sha256 命名的文件，
                     // 两者没有任何关联，不登记就没法从引用消息反查该删哪个文件。
-                    const shortId = saveEmojiIndex(e, emotion, path.basename(imageUrl));
+                    const shortId = saveEmojiIndex(e, emotion, path.basename(saved.filePath));
                     const suffix = shortId
                         ? `\n编号: ${shortId}（发 #gpt删图 ${shortId} 或直接引用本条消息即可删除）`
                         : '';
-                    const replyRes = await e.reply(`偷图成功！\n已将表情包储存在 [${emotion}] 文件夹中~\nAI简评: ${analysis}${suffix}`, true);
+                    const msgRet = await e.reply(`偷图成功！\n已将表情包储存在 [${emotion}] 文件夹中~\n可引用该回复后: #gpt撤销偷图\nAI简评: ${analysis}${suffix}`, true);
+                    // 回执消息 id 是撤销的唯一句柄：引用它是主人事后指回这张图的唯一方式
+                    const msgId = msgRet?.seq || msgRet?.data?.message_id || msgRet?.message_id || msgRet?.messageId;
                     // 记下 Bot 这条「偷图成功」消息的 ID，之后引用它也能反查到文件
                     if (shortId) {
-                        updateEmojiIndexReplyMsgId(shortId, replyRes?.message_id || replyRes?.messageId || replyRes?.data?.message_id);
+                        updateEmojiIndexReplyMsgId(shortId, msgId);
+                    }
+                    if (msgId) {
+                        try {
+                            await redis.set(emojiUndoRedisKey(e, msgId), JSON.stringify({ path: saved.filePath, emotion, isNew: saved.isNew }), { EX: emojiUndoExpireSeconds });
+                        } catch (err) {
+                            logger.error(`[ChatGPT] 偷图撤销记录写入失败: ${err.message}`);
+                        }
+                    } else {
+                        logger.warn('[ChatGPT] 偷图回执缺少消息 id，本次无法通过 #gpt撤销偷图 撤回');
                     }
                 } else {
                     e.reply(`保存表情包失败了呢QAQ`, true);
@@ -894,6 +924,76 @@ export class voicechangehelp extends plugin {
             return null;
         }
         return full;
+    }
+
+    /** /^#(chat)?gpt撤销偷(图|表情包?)$/i */
+    async undo_EmojiImg(e) {
+        const quotedIds = emojiUndoQuotedIds(e);
+        if (!quotedIds.length) {
+            await e.reply('请引用「偷图成功」那条回复后再发送该指令', true);
+            return true;
+        }
+
+        // 引用消息的 id 字段随适配器而异，逐个探测，命中即止
+        let hitKey = null;
+        let raw = null;
+        for (const id of quotedIds) {
+            const key = emojiUndoRedisKey(e, id);
+            const value = await redis.get(key);
+            if (!value) continue;
+            hitKey = key;
+            raw = value;
+            break;
+        }
+        if (!raw) {
+            await e.reply('没找到这条偷图记录（可能已过期或已撤销）', true);
+            return true;
+        }
+
+        let record;
+        try {
+            record = JSON.parse(raw);
+        } catch (err) {
+            logger.error(`[ChatGPT] 偷图撤销记录解析失败: ${err.message}`);
+            await e.reply('这条偷图记录已损坏，无法撤销，请联系主人处理', true);
+            return true;
+        }
+
+        const emotion = saveEmojiEmotions.includes(record?.emotion) ? record.emotion : '未知';
+        const filePath = typeof record?.path === 'string' ? record.path : '';
+
+        // 重复偷同一张图时文件本来就在库里，撤销只清记录；判断在路径校验之前，这种情况不涉及删除
+        if (record?.isNew === false) {
+            await redis.del(hitKey);
+            await e.reply(`已撤销偷图记录：这张图之前就在 [${emotion}] 文件夹里，没有删除文件~`, true);
+            return true;
+        }
+
+        // 记录只由本插件写入，仍校验删除目标在表情库根目录内，避免异常记录导致误删其他文件；
+        // relative 为空串说明记录指向的就是根目录本身（不是文件），一并拒绝
+        const emojiRoot = path.join(process.cwd(), 'data', 'chatgpt', 'sendEmojiTool');
+        const relative = filePath ? path.relative(emojiRoot, path.resolve(filePath)) : '';
+        if (!filePath || !relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+            logger.error(`[ChatGPT] 偷图撤销记录指向表情库之外，已跳过删除: ${filePath}`);
+            await e.reply('这条偷图记录指向的位置不在表情库内，为避免误删已跳过', true);
+            return true;
+        }
+
+        try {
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                await redis.del(hitKey);
+                await e.reply(`已撤销：已从 [${emotion}] 文件夹移除该图片~`, true);
+            } else {
+                await redis.del(hitKey);
+                await e.reply(`记录已清理：这张图已经不在 [${emotion}] 文件夹里了~`, true);
+            }
+        } catch (err) {
+            // 删不掉就保留记录，主人可以重试
+            logger.error(`[ChatGPT] 撤销偷图删除文件失败: ${err.message}`);
+            await e.reply(`撤销失败：${err.message}`, true);
+        }
+        return true;
     }
 
     /** ^#tts(语音)?(替换)?帮助 */
@@ -1395,8 +1495,8 @@ ${userSetting.useTTS === true ? '当前语音模式为' + Config.ttsMode : ''}`
                     this.e.reply(`这图片超过50MB了，还是不要保存了吧QAQ`, true)
                     return false
                 }
-                const imageUrl = await reNameAndSavePic(imgResponse, e.img[0], paimonChuoYiChouSavePicDirectory)
-                if (imageUrl) e.reply(`派蒙戳一戳图片已保存`, true)
+                const saved = await reNameAndSavePic(imgResponse, e.img[0], paimonChuoYiChouSavePicDirectory)
+                if (saved?.filePath) e.reply(`派蒙戳一戳图片已保存`, true)
                 else e.reply(`派蒙戳一戳图片保存失败,请确认`, true)
                 return true
             }
@@ -1568,6 +1668,17 @@ ${userSetting.useTTS === true ? '当前语音模式为' + Config.ttsMode : ''}`
 
 }
 
+/** 偷图回执的记录键：群聊按群号、私聊按宿主伪群号 8888 隔离会话，避免跨会话的消息 id 撞车 */
+function emojiUndoRedisKey(e, msgId) {
+    return `${emojiUndoRedisPrefix}${e?.group_id || 8888}_${msgId}`
+}
+
+/** 引用消息在不同适配器下分别用 seq / reply_id / message_id 标识，全部取出来供撤销逐个探测 */
+function emojiUndoQuotedIds(e) {
+    return [e?.source?.seq, e?.reply_id, e?.source?.message_id]
+        .filter(id => id !== undefined && id !== null && id !== '')
+}
+
 /** 下载好的图片重命名并存档在directory */
 /* ---------------- 偷图索引 ----------------
  * 为什么需要：偷图时本地文件名是 sha256(url) 的哈希（见 reNameAndSavePic），
@@ -1685,12 +1796,12 @@ async function reNameAndSavePic(response, url, directory) {
 
         let localPath = path.join(directory, hash_name + '.' + type)
 
-        // 检查文件是否已经存在
-        if (fs.existsSync(localPath)) return localPath
+        // 检查文件是否已经存在；命中说明这张图早就在库里，撤销时不该删它
+        if (fs.existsSync(localPath)) return { filePath: localPath, isNew: false }
 
         const imageData = await response.arrayBuffer()
         fs.writeFileSync(localPath, Buffer.from(imageData))
-        return localPath
+        return { filePath: localPath, isNew: true }
     } catch (err) {
         logger.error(err)
         return null

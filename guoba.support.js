@@ -240,7 +240,7 @@ export function supportGuoba() {
         {
           field: 'isConvertSentenceToArrayReply',
           label: '分多次回复',
-          bottomHelpMessage: '模拟真人行为，自动分段，把ai回复分成1-3次回复。需要关闭选项 QQ开启markdown',
+          bottomHelpMessage: '模拟真人行为，把 AI 回复分成 1-3 条。原文含标题、列表、表格、代码块时整条发送，不拆分',
           component: 'Switch'
         },
         {
@@ -426,6 +426,12 @@ export function supportGuoba() {
               { field: 'id', label: '内部标识', component: 'Input', show: false },
               { field: 'name', label: '名称', component: 'Input', required: true },
               {
+                field: 'note',
+                label: '备注',
+                bottomHelpMessage: '仅用于在锅巴里区分条目，不参与任何请求',
+                component: 'InputTextArea'
+              },
+              {
                 field: 'apiKey',
                 defaultValue: providerDefaults.api.apiKey,
                 label: 'Chat API Key',
@@ -520,6 +526,12 @@ export function supportGuoba() {
             schemas: [
               { field: 'id', label: '内部标识', component: 'Input', show: false },
               { field: 'name', label: '名称', component: 'Input', required: true },
+              {
+                field: 'note',
+                label: '备注',
+                bottomHelpMessage: '仅用于在锅巴里区分条目，不参与任何请求',
+                component: 'InputTextArea'
+              },
               {
                 field: 'responsesApiKey',
                 defaultValue: providerDefaults.responses.responsesApiKey,
@@ -617,6 +629,12 @@ export function supportGuoba() {
               { field: 'id', label: '内部标识', component: 'Input', show: false },
               { field: 'name', label: '名称', component: 'Input', required: true },
               {
+                field: 'note',
+                label: '备注',
+                bottomHelpMessage: '仅用于在锅巴里区分条目，不参与任何请求',
+                component: 'InputTextArea'
+              },
+              {
                 field: 'claudeApiKey',
                 defaultValue: providerDefaults.claude.claudeApiKey,
                 label: 'claude API Key',
@@ -674,6 +692,12 @@ export function supportGuoba() {
             schemas: [
               { field: 'id', label: '内部标识', component: 'Input', show: false },
               { field: 'name', label: '名称', component: 'Input', required: true },
+              {
+                field: 'note',
+                label: '备注',
+                bottomHelpMessage: '仅用于在锅巴里区分条目，不参与任何请求',
+                component: 'InputTextArea'
+              },
               {
                 field: 'geminiKey',
                 defaultValue: providerDefaults.gemini.geminiKey,
@@ -1386,7 +1410,7 @@ export function supportGuoba() {
           field: 'serpSourceArr',
           label: '搜索/网络来源',
           component: 'Select',
-          bottomHelpMessage: '若选择 Gemini原生搜索 需确保 对话-Gemini方式可使用；若选择（需配置）的工具，需要填写下面对应Key；若使用呆毛版纯本地搜索工具，需要安装python3和依赖，附Ubuntu的安装方法: `apt install python3 python3-pip` `pip install aiohttp beautifulsoup4 googlesearch-python`',
+          bottomHelpMessage: '若选择 Gemini原生搜索 需确保 对话-Gemini方式可使用；若选择（需配置）的工具，需要填写下面对应Key',
           componentProps: {
             allowAdd: true,
             allowDel: true,
@@ -1396,17 +1420,19 @@ export function supportGuoba() {
               { label: 'B站视频搜索工具（推荐）', value: 'Bilibili_SearchVideoTool' },
               { label: 'QQ音乐搜索工具（推荐）', value: 'SendQQ_MusicTool' },
               { label: '网易云音乐搜索工具（推荐）', value: 'Send163_MusicTool' },
-              { label: '高德天气搜索（推荐）（需配置）', value: 'Weather_Tool' },
-              { label: '百度AI搜索（推荐）（需配置）', value: 'BaiduAI_SearchTool' },
+              { label: '高德天气搜索（推荐）（需Key）', value: 'Weather_Tool' },
+              { label: '百度AI搜索（推荐）（需Key）', value: 'BaiduAI_SearchTool' },
               { label: 'Gemini原生搜索（需配置）', value: 'geminiSearchTool' },
-              { label: 'OpenCode同款搜索（可配置）', value: 'opencode_WebSearchTool' },
-              { label: 'Tavily search（需配置）', value: 'tavily_search' },
-              { label: 'Tavily网页读取工具（需配置）', value: 'tavily_WebsiteTool' },
-              { label: 'Azure search（需配置）', value: 'azure' },
-              { label: 'Github仓库读取（需配置）', value: 'GithubAPI' },
+              { label: 'OpenCode同款搜索（可免Key）', value: 'opencode_WebSearchTool' },
+              { label: 'Tavily search（需Key）', value: 'tavily_search' },
+              { label: 'Tavily网页读取工具（需Key）', value: 'tavily_WebsiteTool' },
+              { label: 'Exa 网页读取（可免Key）', value: 'exa_WebFetchTool' },
+              { label: 'Parallel 网页读取（可免Key）', value: 'parallel_WebFetchTool' },
+              { label: 'Azure search（需Key）', value: 'azure' },
+              { label: 'Github仓库读取（需Key）', value: 'GithubAPI' },
               { label: '必应图片搜索工具（分辨率低）', value: 'SerpImageTool_Bing' },
-              { label: '呆毛版纯本地搜索工具（无反爬）', value: 'misaka_WebSearchTool' },
-              { label: '本地网页读取工具（无反爬）', value: 'local_WebsiteTool' },
+              { label: '呆毛纯本地搜索工具（无反爬）', value: 'misaka_WebSearchTool' },
+              { label: '呆毛纯本地网页读取工具（无反爬）', value: 'local_WebsiteTool' },
               { label: 'ikechan8370（不再提供服务）', value: 'ikechan8370' },
             ]
           }
@@ -1444,13 +1470,13 @@ export function supportGuoba() {
         {
           field: 'exaApiKey',
           label: 'Exa API Key',
-          bottomHelpMessage: '可选，用于 OpenCode同款联网搜索 的 Exa 来源（与 OpenCode 使用 Zen 模型时内置的 websearch 相同，直连 Exa / Parallel 的公开托管搜索服务；只填了一家的 Key 时优先用那家，否则按会话在两家之间分流，失败时自动换另一家）；不填走免费额度（按服务器 IP 限流，很容易用完）；前往 https://dashboard.exa.ai/api-keys 申请',
+          bottomHelpMessage: '可选，用于 OpenCode同款联网搜索 的 Exa来源 与 Exa 网页读取；不填时走免费额度（按服务器 IP 限流，很容易用完）；前往 https://dashboard.exa.ai/api-keys 申请',
           component: 'InputPassword'
         },
         {
           field: 'parallelApiKey',
           label: 'Parallel API Key',
-          bottomHelpMessage: '可选，用于 OpenCode同款联网搜索 的 Parallel 来源；不填走免费额度；前往 https://platform.parallel.ai 申请',
+          bottomHelpMessage: '可选，用于 OpenCode同款联网搜索 的 Parallel来源 与 Parallel 网页读取；不填走免费额度（网页读取按会话限流）；前往 https://platform.parallel.ai 申请',
           component: 'InputPassword'
         },
         {
@@ -1489,8 +1515,9 @@ export function supportGuoba() {
               { label: '设置头衔', value: 'SetTitle' },
               { label: '修改群昵称', value: 'EditCard' },
               { label: '消息工具（撤回、加精）', value: 'HandleMsg' },
-              { label: '群公告（只读、全员可用）', value: 'GroupNotice' },
-              { label: '群待办（查看、设置、完成、取消）', value: 'GroupTodo' },
+              { label: '读群公告', value: 'GroupNotice' },
+              // 群待办暂停注册：协议端（如 NapCat）暂未实现读取接口，等支持后恢复
+              // { label: '群待办（查看、设置、完成、取消）', value: 'GroupTodo' },
             ]
           }
         },
@@ -1834,6 +1861,15 @@ export function supportGuoba() {
           componentProps: {
             placeholder: '请输入或选择Cron表达式',
           },
+        },
+        {
+          field: 'memoryGroupCapture.provider',
+          label: '提炼模型来源',
+          bottomHelpMessage: '用于群记忆的提炼（每日自动与手动触发）；保存后即时生效，无需重启',
+          component: 'Select',
+          componentProps: {
+            options: [{ label: '跟随全局对话模型', value: 'current' }, ...providerOptions]
+          }
         },
         {
           field: 'memoryGroupCapture.groups',

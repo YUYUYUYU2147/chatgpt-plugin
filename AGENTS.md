@@ -8,13 +8,13 @@ chatgpt-plugin 是挂载在 TRSS-Yunzai / Yunzai v3 下的 AI 对话插件，包
 
 | 修改范围 / 任务 | 先读 |
 | --- | --- |
-| `model/core.js`、`utils/tools/`、`client/` 的工具执行、鉴权、联网搜索；`utils/paimonFuction.js`、媒体识别与下载 | [工具与媒体](docs/agent-guides/tools.md) |
+| `model/core.js`、`utils/tools/`、`client/` 的工具执行、鉴权、联网搜索；`utils/paimonFuction.js`、`utils/quotedImage.js`、`utils/visionPayload.js`、媒体识别、引用图多模态与下载 | [工具与媒体](docs/agent-guides/tools.md) |
 | `utils/memory/`、`apps/memory*.js`、MemoryTool / UserProfileTool、记忆提示词 | [记忆 V2](docs/agent-guides/memory.md) |
 | `resources/**/index.html`、HTML/Markdown/SVG 生成工具、`utils/htmlDesignSkill.js`、`utils/renderSanitize.js`、出图/字体问题 | [渲染与安全](docs/agent-guides/rendering.md) |
 | `apps/派蒙meme.js`、`utils/memeCategory.js`、`resources/memeList/` | [meme](docs/agent-guides/meme.md)；改模板另读渲染指南 |
 | `utils/config.js`、`guoba.support.js`、provider 输出上限、`model/SubLLM.js` 参数传递 | [配置](docs/agent-guides/configuration.md) |
 | 插件注册、动态规则、priority、定时任务、Redis 操作、遗留接口 | [运行时](docs/agent-guides/runtime.md) |
-| 选择/编写测试、mock、临时探针、测试环境排障 | [测试](docs/agent-guides/testing.md) |
+| 选择/编写测试、mock、临时探针、测试环境排障、CI workflow 改动与复跑、远端 PR 合并前验证 | [测试](docs/agent-guides/testing.md) |
 
 ## Agent skills
 
@@ -22,7 +22,11 @@ chatgpt-plugin 是挂载在 TRSS-Yunzai / Yunzai v3 下的 AI 对话插件，包
 
 Issues, specs, and tickets live as markdown files under `.scratch/<feature>/` in this repo. See `docs/agents/issue-tracker.md`.
 
-多轮迭代出来的需求（逐轮追加、中途改口径、要拍板取舍的那类）**在动手实现前**先落盘成 `.scratch/<feature>/spec.md`——需求只活在对话里时，一次上下文压缩就只剩从会话转录反推这一条路，代价远高于当场写下。
+多轮迭代出来的需求（逐轮追加、中途改口径、要拍板取舍的那类）**在动手实现前**先落盘成 `.scratch/<feature>/spec.md`——需求只活在对话里时，一次上下文压缩就只剩从会话转录反推这一条路，代价远高于当场写下。实现中偏离 spec（口径变了、范围扩大、用户当场追加要求）就**当场把 spec 改到与代码一致再继续**，不要留给评审对齐：这类漂移会被读成「代码与 spec 不一致」，查证成本远高于改那一行。
+
+### Triage labels
+
+`Status:` 取 `needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`，已交付用 `done`。See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
@@ -40,26 +44,30 @@ single-context: one root `GLOSSARY.md` plus ADRs under `docs/adr/`. See `docs/ag
 - 日志、注释与用户文案用中文，日志前缀沿用 `[Memory]` / `[MemoryV2]` / `[ChatGPT]` 等。注释解释原因、业务约束和权衡；缩进与分号跟随所在文件。
 - **写「N 处都…」「所有…」「一律…」这类跨位置的全称断言前，逐个打开被断言的位置核对**，不要只核对自己刚改的那一处。本仓已因此出现过三次失实且都活到了评审：四个 provider 分支的错误措辞（Gemini 实际不同）、测试注释宣称"天然免疫"误伤、锅巴说明文案前后半句矛盾。
 - **不主动 `git add` / `commit` / `push`**；只有用户在当前请求中明确要求才执行。提交 message 用 `feat: 中文描述` / `fix: 中文描述`。
-- **派生评审子 agent（`/code-review` 的两个轴）一律前台并行发出，不要用 `run_in_background`。** 后台派生会把它变成"自动团队"成员：当轮没有受支持的取回通道（`TaskOutput` 拒绝等团队成员），且它一旦是 `killed`（终态）就**跳过完成通知**，结果必然丢失。机制与一手证据见[本仓调查记录](.scratch/group-notice-todo/research.md)。
-- **本机是 Windows：文件读取、搜索、列目录一律走专用工具**（`Read` / `Grep` / `Glob` / `Edit` / `Write`），不用 Bash 的 `sed` / `awk` / `cat` / `head` / `tail` / `grep -r` / `find` 代劳；复杂内联 `node -e` / `python -c` 先落临时脚本再执行。Git Bash 下对大目录递归 `grep` 会超时——实测 `.workbuddy` 全盘搜索三次全被 SIGTERM，换 `Grep` 工具三次全一次命中。
+- **一切需要结果的子 agent（含评审两轴与调研）一律前台派生，不要用 `run_in_background`；两轴评审还要在同一条消息里并发派出**（两次调用一次发出）——等一轴回来再派另一轴等于白等一轮。后台派生会把它变成"自动团队"成员：出生即可能被停止（运行时日志原文 “spawned after team cancel and was paused”）；当轮没有受支持的取回通道（`TaskOutput` 拒绝等团队成员），被终止（终态）后又**跳过完成通知**，结果必然丢失——评审与调研共 3 次实测无一存活。真正的后台并行是**任务粒度**（侧边栏多任务 /「保存到工作空间」多 Agent 协作），不是会话内子 agent。机制与一手证据见[本仓调查记录](.scratch/group-notice-todo/research.md)。
+- **本机是 Windows：文件读取、搜索、列目录一律走专用工具**（`Read` / `Grep` / `Glob` / `Edit` / `Write`），不用 Bash 的 `sed` / `awk` / `cat` / `head` / `tail` / `grep -r` / `find` 代劳；复杂内联 `node -e` / `python -c` 先落临时脚本再执行。Git Bash 下对大目录递归 `grep` 会超时——实测 `.workbuddy` 全盘搜索三次全被 SIGTERM，换 `Grep` 工具三次全一次命中。**含本机用户名的绝对路径不写进任何产出**（文档、注释、命令、回复都不出现）——一律用 `~` / `%LOCALAPPDATA%` / 相对路径代替；护栏为 `test/pathLeak.check.mjs`（随 `npm run check` / CI）。
+- **本机 git 与长输出**：`git rev-parse --short` 只接受单参数（多参数报 `Needed a single revision`）；`git grep` 无 `--branches` / `--remotes`（逐 ref 循环查）；全仓搜索排除 `server/static`（打包产物）；对比新生成文件用 `--ignore-cr-at-eol`；长输出先落日志再取尾部（超限存档读不回），**判成败用 `(cmd > log 2>&1; echo EXIT=$?)`，不要接 `tail` / `grep` 管道**——退出码会变成后者的，`grep` 无匹配还会给出假的失败；`ref:path` 形式的参数（`git show` / `cat-file` / `ls-tree` / `diff`）先加 `MSYS_NO_PATHCONV=1`——不设时 Git Bash 的路径转换会改写参数，`show` 报 ambiguous argument，`cat-file -e` 这类探测还会给出假的「不存在」；结论是否定或异常时先怀疑它。
 
 ## 运行环境与入口
 
 - 纯 ESM（`package.json` 的 `"type": "module"`），Node.js，无构建步骤、无 TypeScript，无 lint/format/类型检查配置。
-- 必须位于 Yunzai 根目录的 `plugins/chatgpt-plugin`；依赖宿主的 `logger`、`redis`、`Bot`、`segment` 和 `../../../lib/plugins/plugin.js`。这些不在插件仓库内，**不要修复这些宿主导入**。
+- **本仓没有 Python 代码**，工具链也不依赖它。一次性验证要跑 Python 时，venv 建在系统临时目录、用完连目录删；不往系统解释器 `pip install`——装进去就留在全局，仓库里没有任何检查能发现它。
+- 必须位于 Yunzai 根目录的 `plugins/chatgpt-plugin`；依赖宿主的 `logger`、`redis`、`Bot`、`segment` 和 `../../../lib/plugins/plugin.js`。这些不在插件仓库内，**不要修复这些宿主导入**。运行时还依赖宿主提供的模块（如 `md5` / `moment` / `yaml`，其中 `md5` 是宿主自带的替身模块；由 Node 从插件目录逐级向上解析命中宿主 `node_modules`），**不要**在插件 package.json 里重复声明；CI 里由 `.github/workflows/check.yml` 按同一布局模拟补齐。
 - `utils/common.js` 是重依赖入口，纯逻辑测试不要直接 import；测试需按需提供全局 stub/mock。
 - `config/config.json` 是运行时配置，**勿提交**。`utils/SydneyAIClient.js` 已废弃，不为本次任务顺手修复、重构或删除，也不删除其遗留 import；清理属于单独议题。
+- 查远端 PR/CI 用 gh：`%LOCALAPPDATA%\Programs\gh\bin\gh.exe`（已登录 misaka20002；本机新 shell 可能不在 PATH，用全路径）。公开仓库也可免认证 `curl` GitHub API 的 check-runs / jobs / annotations。
 
 | 路径 | 职责 / 数据流 |
 | --- | --- |
 | `index.js`、`apps/` | 扫描命令模块并注册 `extends plugin` 类；每文件只注册第一个导出 |
+| `apps/tts_voice_help.js` | tts 语音设置指令、fish 账号管理、派蒙戳一戳存图、`#gpt偷图` / `#gpt撤销偷图`（表情库 `data/chatgpt/sendEmojiTool/<emotion>/`） |
 | `apps/chat.js` → `model/core.js` | `chatgpt()` → `abstractChat(e, prompt)` → `Core.sendMessage()` → 按 `use` 分发 provider |
 | `model/SubLLM.js`、`client/` | 子模型调用与 provider 协议；默认跟随 provider 回复 token 上限，工具/子代理不另设上限 |
 | `utils/tools/` | `collectTools(e)` 条件收集 → schema → 模型调用 → `func(opts, e)` → 结果回填 |
 | `utils/memory/`、`apps/memory*.js` | 采集 → 每日提炼/校验 → 存储 → 召回/画像；权限策略在 `policy.js` |
 | `utils/config.js`、`guoba.support.js` | 配置 Proxy 与锅巴 schema；面板字段需同步 schema、`getConfigData()`、`setConfigData()` |
 | `server/`、`resources/`、`prompts/` | Fastify 服务、渲染模板、提示词 |
-| `test/` | 随仓库入库的本地辅助验证；仓库没有 CI |
+| `test/` | 随仓库入库的本地辅助验证；CI（`.github/workflows/check.yml`）跑语法预检 + 快套件 |
 
 ## 跨模块不变式
 
@@ -81,9 +89,10 @@ single-context: one root `GLOSSARY.md` plus ADRs under `docs/adr/`. See `docs/ag
 4. 记录实际结果和未验证的限制。已确认无关的既有失败记录即可，不反复验证；未验证不得宣称完成。
 
 - 不为覆盖率扩大任务，不测未触及的稳定路径，不重复语言/标准库保证。mock 只模拟依赖边界，被测逻辑必须执行生产代码。
+- **测试与检查一律后台跑**（Bash 的 `run_in_background: true`），结果从完成通知里取；前台等着只会白占一轮，长套件还容易撞超时。变异验证同理——先把改动备份到临时目录再改，还原用备份覆盖，**不要用 `git checkout --` 还原**：它会连未提交的真实改动一起冲掉（已踩过）。
 - 不默认增加变异测试、源码文本守卫、重复桩/真实链路测试、全组合矩阵或大规模端到端测试。源码守卫只用于必要静态约束，不能冒充行为测试；变异仅用于反复发生或难以判断覆盖有效性的高风险问题，或用户明确要求。
 - 测试脚本清单以 `package.json` 和磁盘实际文件为准，不保留缺失路径：与存在文件混跑时缺失路径可能被静默忽略。不要恢复历史 `chain*.test.mjs`，不用固定用例数证明覆盖。
-- 常用入口：`npm run check`（全仓语法预检 + 快套件，CI 同款） / `test:memory` / `test:tools` / `test:media` / `test:config` / `test:thinking` / `test:render` / `test:meme:fast`（后续项同样加 `npm run`）。完整 meme 慢测试和 mutants 按需使用。
+- 常用入口：`npm run check`（全仓语法预检 + 路径卫生 + 快套件，CI 同款）；其余专项套件与慢测试按 `package.json` 的 `scripts`（`test:*`）选用，清单不在文档里复述——新增脚本时不必回头改这里。
 - 临时脚本放系统临时目录，或用完删除并确认清理。真实模型/确认流程仅在相关改动无法由本地验证覆盖时验证；本地全绿不等于 CI 或真实运行保障。
 - 最终汇报包含 **Changes / Validation / Risks**：改了什么、实际跑了什么、与本次相关的剩余限制。
 

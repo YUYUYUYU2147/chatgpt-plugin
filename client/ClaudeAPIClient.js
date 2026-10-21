@@ -7,6 +7,8 @@ import { Config } from '../utils/config.js'
 import { sendToolCallForwardMsg, sendToolRoundTextForwardMsg } from '../utils/toolForward.js'
 import { normalizeModelText } from '../utils/thinking.js'
 import { fetchWithConnectionRetry } from '../utils/network-retry.js'
+import { redactArgsForLog } from '../utils/toolArgRedaction.js'
+import { buildClaudeImageBlocks, pickMediaList } from '../utils/visionPayload.js'
 
 const BASEURL = 'https://api.anthropic.com'
 
@@ -154,8 +156,8 @@ export class ClaudeAPIClient extends BaseClient {
       body.tool_choice = this._getToolChoice(toolMode)
     }
     if (this.debug) {
-      console.log("body: " + JSON.stringify(body, null, 2))
-      console.log(`sendMessage (${messages.length} messages)`, body)
+      logger.info("body: " + JSON.stringify(body, null, 2))
+      logger.info(`sendMessage (${messages.length} messages)`, body)
     }
     let url = `${this.baseUrl}/v1/messages`
     let result = await fetchWithConnectionRetry(this.fetch, url, {
@@ -168,7 +170,7 @@ export class ClaudeAPIClient extends BaseClient {
       body: JSON.stringify(body)
     }, {
       onRetry: ({ error, retry, maxRetries, delayMs }) => {
-        console.warn(`[Chatgpt][Claude] 连接失败 (${error.code || error.message})，${delayMs / 1000} 秒后进行第 ${retry}/${maxRetries} 次重试`)
+        logger.warn(`[Chatgpt][Claude] 连接失败 (${error.code || error.message})，${delayMs / 1000} 秒后进行第 ${retry}/${maxRetries} 次重试`)
       }
     })
     if (result.status !== 200) {
@@ -179,7 +181,7 @@ export class ClaudeAPIClient extends BaseClient {
      */
     let response = await result.json()
     if (this.debug) {
-      console.log("response: " + JSON.stringify(response, null, 2))
+      logger.info("response: " + JSON.stringify(response, null, 2))
     }
     if (response.type === 'error') {
       logger.error(response.error.message)
@@ -202,7 +204,7 @@ export class ClaudeAPIClient extends BaseClient {
     const cacheReadInfo = reportedCacheReadTokens == null
       ? ''
       : ` | 缓存命中(${cacheReadTokens}, ${cacheHitRate.toFixed(1)}%)`
-    console.info(`[Chatgpt][Claude]${this.providerName ? `[${this.providerName}]` : ''} 输入Token(${totalInputTokens})${body.max_tokens ? ` | 回复上限(${body.max_tokens})` : ''} | 回答Token(${outputTokens}) | 累计Token(${totalTokens})${cacheWriteInfo}${cacheReadInfo}`)
+    logger.info(`[Chatgpt][Claude]${this.providerName ? `[${this.providerName}]` : ''} 输入Token(${totalInputTokens})${body.max_tokens ? ` | 回复上限(${body.max_tokens})` : ''} | 回答Token(${outputTokens}) | 累计Token(${totalTokens})${cacheWriteInfo}${cacheReadInfo}`)
     return response
   }
 
@@ -268,16 +270,7 @@ export class ClaudeAPIClient extends BaseClient {
      * }>}
      */
     let thisContent = [{ type: 'text', text }]
-    if (opt.media) {
-      thisContent.push({
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: opt.media.mimeType || 'image/jpeg',
-          data: opt.media.data
-        }
-      })
-    }
+    thisContent.push(...buildClaudeImageBlocks(pickMediaList(opt)))
     const thisMessage = {
       role: 'user',
       content: thisContent,
@@ -364,11 +357,12 @@ export class ClaudeAPIClient extends BaseClient {
         const chosenTool = this.tools.find(t => t.name === name)
         let resultContent
         let isError = false
-        logger.info(`[Chatgpt][Claude] execution function: ${JSON.stringify({ name, args })}`)
+        logger.info(`[Chatgpt][Claude][工具调用][${name}]: ${JSON.stringify(args)}`)
         try {
           if (!chosenTool) {
             isError = true
             resultContent = `Function ${name} not found.`
+            logger.warn(resultContent)
           } else {
             const execArgs = Object.assign({}, args, {
               isAdmin: ['admin', 'owner'].includes(this.e?.sender?.role) || (this.e?.group?.is_admin && this.e?.isMaster),
@@ -382,7 +376,7 @@ export class ClaudeAPIClient extends BaseClient {
               }
             }
             resultContent = await chosenTool.func(execArgs, this.e)
-            logger.info(`[Chatgpt][Claude] function ${name} execution result: ${this._stringifyToolResult(resultContent)}`)
+            logger.info(`[Chatgpt][Claude][工具返回][${name}]: ${this._stringifyToolResult(resultContent)}`)
           }
         } catch (err) {
           isError = true
@@ -393,7 +387,7 @@ export class ClaudeAPIClient extends BaseClient {
           platform: 'Claude',
           round: toolRoundCount,
           name,
-          args,
+          args: redactArgsForLog(name, args),
           result: resultContent
         })
         toolResults.push({
