@@ -1208,6 +1208,9 @@ async function collectTools(e) {
   }
 
   let promptAddition = ''
+  if (Config.drawToolsArr?.length && tools.some(tool => tool.name === 'draw')) {
+    systemAddition += '\nWhen the user asks to draw, generate, or edit an image, you MUST call the draw tool instead of only describing the image.'
+  }
   // let img = await parseSourceImg(e)
   if (e.img?.length > 0) {
     // tools.push(new ImageCaptionTool())

@@ -10,7 +10,7 @@ export class APTool extends AbstractTool {
 
   constructor() {
     super()
-    this.description = 'Useful when you want to draw picture, edit images or generate videos'
+    this.description = 'MUST be called whenever the user asks to draw, generate, or edit an image or video.'
 
     const drawToolsArr = Config.drawToolsArr ?? []
     const enumValues = [];
@@ -26,7 +26,7 @@ export class APTool extends AbstractTool {
       { id: 'Jimeng-videoGeneration', desc: '- Jimeng-videoGeneration: Use Jimeng API to generate video.' },
       { id: 'gemini-Image-gg', desc: '- gemini-Image-gg: Use Gemini-image to draw or editing existing images.' },
       { id: 'gpt-Image-2-ss', desc: '- gpt-Image-2-ss: Use GPT-Image-2 to draw or editing existing images.' },
-      { id: 'sf-dd-paint', desc: '- sf-dd-paint: Use modelscope (魔搭) drawing or editing  API.' }
+      { id: 'sf-dd-paint', desc: '- sf-dd-paint: MUST use when the user asks to draw or edit an image.' }
     ];
 
     toolConfigs.forEach(tool => {
@@ -292,9 +292,16 @@ export class APTool extends AbstractTool {
           return 'draw failed, ModelScope painting app might not be supported in your siliconflow-plugin version.';
         }
         const strPaint = aspectRatioText[aspectRatio] ?? '';
-        new_e.msg = `#d魔搭编辑图片${strPaint} ${charactersName}, ${Config.sfPluginToPaintPrefix}, ${processedTags}`;
+        // 主人使用 DD 里选中的默认接口（可在锅巴切换 chatgpt2api/魔搭），非主人回退魔搭
+        const useDefaultApi = new_e.isMaster;
+        const ddCmd = useDefaultApi ? '#dd' : (new_e.img?.length ? '#d魔搭改图' : '#d魔搭Z');
+        new_e.msg = `${ddCmd}${strPaint} ${charactersName}, ${Config.sfPluginToPaintPrefix}, ${processedTags}`;
         logger.info('[ChatGPT][DrawTool]开始调用sf插件dd绘画：\nmsg: ', new_e.msg);
-        await sfdd.dd_custom_command(new_e);
+        if (useDefaultApi) {
+            await sfdd.dd_draw(new_e);
+        } else {
+            await sfdd.dd_custom_command(new_e);
+        }
         return finishDraw('draw success, picture has been sent.', true);
       }
 
