@@ -602,9 +602,32 @@ if (hadConfigFile && config.toolGroupAdminArrMigration !== TOOL_GROUP_ADMIN_ARR_
   pendingToolGroupAdminArrMarker = true
 }
 
+/**
+ * 锅巴的 InputTextArea 保存的是字符串，而这三项在运行时按对象读取。
+ * 用户在面板里填 JSON 会被存成字符串，导致随机图/API 全部取不到键；
+ * 这里统一把可解析的字符串还原成对象，解析失败则退回默认值，避免整项失效。
+ */
+function normalizePaimonChouJsonFields(target) {
+  const fallbackFields = {
+    paimon_chou_apis: defaultConfig.paimon_chou_apis,
+    paimon_chou_image_urls: defaultConfig.paimon_chou_image_urls,
+    paimon_chou_formats: defaultConfig.paimon_chou_formats,
+  }
+  for (const [key, fallback] of Object.entries(fallbackFields)) {
+    if (typeof target[key] !== 'string') continue
+    try {
+      const parsed = JSON.parse(target[key])
+      target[key] = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : lodash.cloneDeep(fallback)
+    } catch {
+      target[key] = lodash.cloneDeep(fallback)
+    }
+  }
+}
+
 config = lodash.mergeWith({}, defaultConfig, config, useWholeArray)
 config.groupReply = normalizeGroupReplyConfig(config.groupReply)
 config.avatarReply = normalizeAvatarReplyConfig(config.avatarReply)
+normalizePaimonChouJsonFields(config)
 normalizeProviders(config, providerDefaults)
 config.version = defaultConfig.version
 
@@ -723,6 +746,7 @@ export const Config = new Proxy(config, {
     if (property === 'commit') {
       return candidate => {
         const next = lodash.cloneDeep(candidate)
+        normalizePaimonChouJsonFields(next)
         normalizeProviders(next, providerDefaults)
         if (!saveDiff(next)) throw new Error('配置保存失败')
         Object.assign(target, next)
@@ -780,6 +804,7 @@ export const Config = new Proxy(config, {
       if (!row) throw new Error('请先切换到对应协议的模型提供商')
       row[property] = value
     } else candidate[property] = value
+    normalizePaimonChouJsonFields(candidate)
     normalizeProviders(candidate, providerDefaults)
     if (!saveDiff(candidate)) throw new Error('配置保存失败')
     Object.assign(target, candidate)
