@@ -43,7 +43,7 @@ export class PaimonChuo extends plugin {
             name: '派蒙戳一戳',
             dsc: '戳一戳机器人触发效果',
             event: '*',
-            priority: 1000,
+            priority: Number.MIN_SAFE_INTEGER,
             rule: [
                 {
                     fnc: 'chuoyichuo',
