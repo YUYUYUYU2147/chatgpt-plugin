@@ -6,13 +6,13 @@ mock.module('../../../lib/plugins/plugin.js', { defaultExport: class {} })
 mock.module('../../../lib/common/common.js', { defaultExport: {} })
 mock.module('../utils/tts/microsoft-azure.js', { defaultExport: {} })
 /** 语音开关与合成结果由用例按需改写；默认不启用语音，保持其它用例的既有路径 */
-const harness = { useTTS: false, audio: undefined }
+const harness = { useTTS: false, audio: '[语音]' }
 mock.module('../utils/common.js', { namedExports: {
   completeJSON() {}, formatDate() {}, formatDate2() {},
-  generateAudio: async (e, text) => { globalThis.__spoken.push(text); return '[语音]' },
+  generateAudio: async (e, text) => { globalThis.__spoken.push(text); return harness.audio },
   getDefaultReplySetting() {},
   getImageOcrText() {}, parseSourceImg: async () => false, getUin: e => e.self_id,
-  getUserData: async () => ({ mode: 'responses' }), getUserReplySetting: async () => globalThis.__replySetting || {},
+  getUserData: async () => ({ mode: 'responses' }), getUserReplySetting: async () => (harness.useTTS ? { useTTS: true } : (globalThis.__replySetting || {})),
   isImage() {},
   makeForwardMsg: async (e, content) => { globalThis.__forwards.push(content); return '[合并转发]' },
   normalizeChatMode: mode => mode, randomString() {}, render() {}, renderUrl() {}
