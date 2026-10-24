@@ -476,19 +476,17 @@ const defaultConfig = {
   // 智能模式 V2 记忆系统配置（群聊采集须由 Bot 主人在锅巴或当前群显式授权）
   enableMemory: false, // 是否启用记忆系统（唯一总开关，同时开放 Memory_Tool 与 userProfile）
   enableAtGraph: true, // 是否开放 #at图谱 指令；仍需启用记忆系统并授权当前群
-  maxMemoriesPerUser: 100, // 每用户每作用域（跨群 user / 每群 user_group）的 V2 记忆上限
-  memoryMinImportance: 0.4, // 注入对话的最低重要性阈值（0-1）
+  maxMemoriesPerUser: 100, // 每用户每作用域（跨群 user / 每群 user_group）各自独立，默认 100；Guoba 最低 50
+  maxMemoriesPerGroup: 50, // 每群公共 group 记忆的独立整理容量目标，默认 50；Guoba 最低 20（>95% 夜间压缩可按 Token 预算分片）
   memoryContextLimit: 8, // 每次对话注入的最大记忆条数
+  memoryRecallProvider: '', // 空值=仅文字匹配；all=按权重导入（按个人:群公共 9:1 填满上限，不调模型）；current 或已配置 Provider ID=子模型筛选
   allowMemberDeleteOwnMemory: true, // 允许成员删除自己的记忆（默认开启）
   memoryGroupCapture: {
     groups: [], // 授权采集的群列表 [{groupId, switchOn}]，锅巴 GSubForm 管理或 #群记忆开启
     cronTime: '0 0 4 * * ? *', // 每日提炼 EasyCron，修改后重启生效
     provider: 'current', // 提炼使用的模型供应商条目 ID 或 'current'（跟随全局对话模型）；锅巴「提炼模型来源」，保存后即时生效
     rawRetentionDays: 30, // 群原文保留天数
-    eventRetentionDays: 90, // 未指定期限的临时事件默认保留天数
-    inputTokenLimit: 30000, // 提取模型输入 Token 上限
-    // 输出上限不再单独配置：提炼用的子模型直接跟随 provider 的「回复内容最大Token数」
-    // 最低置信度也不再是配置项：固定为 extractor.js 的 MEMORY_MIN_CONFIDENCE（0.7）
+    eventRetentionDays: 90,
   },
 
   // MCP 协议配置
@@ -609,11 +607,6 @@ config.groupReply = normalizeGroupReplyConfig(config.groupReply)
 config.avatarReply = normalizeAvatarReplyConfig(config.avatarReply)
 normalizeProviders(config, providerDefaults)
 config.version = defaultConfig.version
-
-// V2 记忆迁移：旧版 memoryMinImportance 为 1-10 语义，V2 中 importance 为 0-1，归一化防止注入被全部过滤
-if (typeof config.memoryMinImportance === 'number' && config.memoryMinImportance > 1) {
-  config.memoryMinImportance = Math.min(1, Math.max(0, config.memoryMinImportance / 10))
-}
 
 /** 递归清理从本地读取但 defaultConfig 中已经不存在的多余键 */
 function removeExtraKeys(target, base) {

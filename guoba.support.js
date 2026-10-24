@@ -6,6 +6,7 @@ import { avatarOptions } from './utils/avatar/catalog.js'
 import { speakers, vits_emotion_map } from './utils/tts.js'
 import { supportConfigurations as azureRoleList } from './utils/tts/microsoft-azure.js'
 import { formatMcpServersForGuoba, stringifyMcpServersFromGuoba } from './utils/mcpServersGuoba.js'
+import { RECALL_MODE_ALL } from './utils/memory/recallMode.js'
 import lodash from "lodash";
 
 // 支持锅巴
@@ -340,8 +341,8 @@ export function supportGuoba() {
         },
         {
           field: 'is_recallMsg',
-          label: '撤回错误消息',
-          bottomHelpMessage: '是否撤回大模型调用出错时的错误消息，此开关重启生效；如果你的云崽平台出现撤回错误消息时把用户消息也一起撤回了，请转到此平台: https://github.com/AIGC-Yunzai/TRSS-Yunzai-NapC',
+          label: '撤回失败消息',
+          bottomHelpMessage: '是否撤回群聊内LLM调用出错、语音出错、拒绝回答时的消息；若你的云崽平台撤回提示时把用户消息也一起撤回了，请转到此平台: https://github.com/AIGC-Yunzai/TRSS-Yunzai-NapC',
           component: 'Switch'
         },
         {
@@ -1823,46 +1824,6 @@ export function supportGuoba() {
           component: 'Switch'
         },
         {
-          field: 'maxMemoriesPerUser',
-          label: '单用户最大记忆数量',
-          bottomHelpMessage: '每用户在每个作用域（跨群 user、每个群的 user_group）最多保存的原子事实数（默认 100），超过后按 重要性×时效 淘汰得分最低的一条',
-          component: 'InputNumber',
-          componentProps: {
-            min: 10,
-            step: 1
-          }
-        },
-        {
-          field: 'memoryMinImportance',
-          label: '记忆最低重要性',
-          bottomHelpMessage: '注入对话的记忆最低重要性阈值（0-1），低于此值且与当前问题不相关的记忆不注入',
-          component: 'InputNumber',
-          componentProps: {
-            min: 0.05,
-            step: 0.05,
-            max: 1
-          }
-        },
-        {
-          field: 'memoryContextLimit',
-          label: '对话记忆数量限制',
-          bottomHelpMessage: '每次对话最多注入多少条相关记忆，按 问题相关性+重要性+置信度 排序',
-          component: 'InputNumber',
-          componentProps: {
-            min: 1,
-            step: 1
-          }
-        },
-        {
-          field: 'memoryGroupCapture.cronTime',
-          label: '每日提炼时间',
-          bottomHelpMessage: '每日批量提炼的 Cron 表达式（EasyCron），默认 0 0 4 * * ? *（每天凌晨4点提炼已结束的北京时间自然日）；修改后重启生效',
-          component: 'EasyCron',
-          componentProps: {
-            placeholder: '请输入或选择Cron表达式',
-          },
-        },
-        {
           field: 'memoryGroupCapture.provider',
           label: '提炼模型来源',
           bottomHelpMessage: '用于群记忆的提炼（每日自动与手动触发）；保存后即时生效，无需重启',
@@ -1872,9 +1833,70 @@ export function supportGuoba() {
           }
         },
         {
+          field: 'memoryGroupCapture.cronTime',
+          label: '每日提炼时间',
+          bottomHelpMessage: '每日批量提炼的 Cron 表达式（EasyCron），默认 0 0 4 * * ? *；修改后重启生效',
+          component: 'EasyCron',
+          componentProps: {
+            placeholder: '请输入或选择Cron表达式',
+          },
+        },
+        {
+          field: 'maxMemoriesPerUser',
+          label: '单用户最大记忆数量',
+          bottomHelpMessage: '每位用户的跨群个人 user 与各群个人 user_group 分别使用该容量目标；每日提炼时数量超过 95% 将尝试整理通过 LLM 至 70% 及以下',
+          component: 'InputNumber',
+          componentProps: {
+            min: 50,
+            step: 1
+          }
+        },
+        {
+          field: 'maxMemoriesPerGroup',
+          label: '群公共最大记忆数量',
+          bottomHelpMessage: '每群公共 group 记忆独立使用该容量目标；每日提炼时数量超过 95% 将尝试整理通过 LLM 至 70% 及以下',
+          component: 'InputNumber',
+          componentProps: {
+            min: 20,
+            step: 1
+          }
+        },
+        // 运行时事实（不上面板，供维护者对照）：
+        // - 仅文字匹配：相关性得分 > 0（正文、标签、factKey、factValue 任一命中）的条目全部参与排序，按 score 取前 N；
+        // - 按权重导入（memoryRecallProvider = 'all'）：不筛相关度，按 score 填满 N，
+        //   其中个人(user + user_group) : 群公共 ≈ 9:1；群池非空时至少 1 条，群池为空则全用个人，
+        //   一侧不足由另一侧补位；
+        // - 姓名/称呼等常驻画像（≤2 条）在「仅文字匹配」与「模型判断」下无条件注入；
+        //   按权重导入不做特殊占位（它们只作为个人池里高权重的普通条目参与排序）；
+        // - 注入正文不按字符截断，单条正文写入时上限 500 字。
+        {
+          field: 'memoryContextLimit',
+          label: '最大记忆召回数量',
+          bottomHelpMessage: '每次对话最多注入的记忆条数；为保证对话质量与上下文预算，推荐 20 条以内；除此之外Bot也拥有主动读取/修正记忆的工具',
+          component: 'InputNumber',
+          componentProps: {
+            min: 5,
+            step: 1
+          }
+        },
+        {
+          field: 'memoryRecallProvider',
+          label: '记忆召回判断方式',
+          bottomHelpMessage: '可选择已配置的接口，聊天时额外调用一次小模型判断哪些记忆有助于回答问题；或使用 仅文字匹配 / 按权重导入；其中 仅文字匹配 仅支持 中英文',
+          component: 'Select',
+          componentProps: {
+            options: [
+              { label: '不使用 LLM 判断（仅文字匹配）', value: '' },
+              { label: '不使用 LLM 判断（按权重导入）', value: RECALL_MODE_ALL },
+              { label: '跟随全局对话模型', value: 'current' },
+              ...providerOptions
+            ]
+          }
+        },
+        {
           field: 'memoryGroupCapture.groups',
           label: '授权采集群',
-          bottomHelpMessage: '群聊采集必须由 Bot 主人在此显式授权或群内 #群记忆开启；仅采集授权群的非指令、非Bot纯文本，原文默认保留30天；⚠️ 关闭某群的"开启采集"开关仅停止后续采集，不会删除已采集的原文与记忆，如需来源级清理请在群内使用 #群记忆关闭 指令',
+          bottomHelpMessage: '群聊采集必须由 Bot 主人在此显式授权或群内 #群记忆开启；仅采集授权群的非指令、非Bot纯文本；⚠️ 注意：关闭某群的"开启采集"开关仅停止后续采集，不会删除已采集的原文与记忆，如需来源级清理请在群内使用 #群记忆关闭 指令',
           component: 'GSubForm',
           componentProps: {
             multiple: true,
@@ -1914,16 +1936,7 @@ export function supportGuoba() {
         //     step: 1
         //   }
         // },
-        // {
-        //   field: 'memoryGroupCapture.inputTokenLimit',
-        //   label: '提取输入Token上限',
-        //   bottomHelpMessage: '每日提炼单次模型输入 Token 上限，默认 30000',
-        //   component: 'InputNumber',
-        //   componentProps: {
-        //     min: 256,
-        //     step: 1000
-        //   }
-        // },
+        // MEMORY_INPUT_TOKEN_LIMIT 提炼/压缩记忆输入上限 已改为 50K Token 常量
         {
           label: 'MCP',
           component: 'Divider'

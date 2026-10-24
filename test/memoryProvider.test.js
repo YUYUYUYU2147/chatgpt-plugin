@@ -74,6 +74,92 @@ test('锅巴「提炼模型来源」：schema、默认 current、保存后重载
   assert.equal(reloaded.memoryGroupCapture.provider, 'prov-aaa', '保存后重载一致')
 })
 
+
+test('锅巴记忆召回模型：默认关闭、接口选项、保存与重载', t => {
+  const cwd = makeCwd('chatgpt-memory-recall-provider-')
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }))
+  const run = action => JSON.parse(runIn(cwd, `
+    import { mock } from 'node:test'
+    import assert from 'node:assert/strict'
+    globalThis.logger = { error: console.error, warn() {}, info() {} }
+    globalThis.redis = { get: async () => null }
+    mock.module(${JSON.stringify(moduleUrl('../utils/tts.js'))}, { namedExports: { speakers: [], vits_emotion_map: [] } })
+    mock.module(${JSON.stringify(moduleUrl('../utils/tts/microsoft-azure.js'))}, { namedExports: { supportConfigurations: [] } })
+    const { supportGuoba } = await import(${JSON.stringify(moduleUrl('../guoba.support.js'))})
+    const guoba = supportGuoba().configInfo
+    ${action}
+    process.stdout.write(JSON.stringify(await guoba.getConfigData()))
+    process.exit(0)
+  `))
+  const saved = run(`
+    const field = guoba.schemas.find(s => s.field === 'memoryRecallProvider')
+    assert.equal(field.label, '记忆召回判断模型')
+    // '' 之后紧跟「按权重导入」哨兵 'all'，再是跟随全局与已配置接口
+    assert.deepEqual(field.componentProps.options.map(o => o.value), ['', 'all', 'current', 'prov-aaa'])
+    // 召回条数上限不再有"达到个人容量就全量注入"的语义，文案必须改成推荐值
+    const limitField = guoba.schemas.find(s => s.field === 'memoryContextLimit')
+    assert.match(limitField.bottomHelpMessage, /20 条以内/)
+    assert.doesNotMatch(limitField.bottomHelpMessage, /全部注入|有权访问的所有记忆|跳过全部筛选/)
+    assert.equal(limitField.componentProps.min, 5)
+    // 记忆最低重要性阈值已整体删除（2026-10-24），面板不应再暴露该字段
+    assert.equal(guoba.schemas.some(s => s.field === 'memoryMinImportance'), false)
+    assert.equal((await guoba.getConfigData()).memoryRecallProvider, '')
+    // 'all' 是召回模式哨兵，不能被 provider 引用校验当成不存在的提供商
+    await guoba.setConfigData({ memoryRecallProvider: 'all' }, {
+      Result: { ok() {}, error(message) { throw new Error(message) } }
+    })
+  `)
+  assert.equal(saved.memoryRecallProvider, 'all', '哨兵值必须能保存')
+  assert.equal(run('').memoryRecallProvider, 'all', '哨兵值必须能通过加载校验')
+  const savedApi = run(`
+    await guoba.setConfigData({ memoryRecallProvider: 'prov-aaa', memoryContextLimit: 100, maxMemoriesPerUser: 100 }, {
+      Result: { ok() {}, error(message) { throw new Error(message) } }
+    })
+  `)
+  assert.equal(savedApi.memoryRecallProvider, 'prov-aaa')
+  assert.equal(savedApi.memoryContextLimit, 100)
+  assert.equal(savedApi.maxMemoriesPerUser, 100)
+  assert.equal(run('').memoryRecallProvider, 'prov-aaa')
+  assert.equal(run(`
+    await guoba.setConfigData({ memoryRecallProvider: '' }, { Result: { ok() {}, error(message) { throw new Error(message) } } })
+  `).memoryRecallProvider, '')
+  assert.equal(run('').memoryRecallProvider, '')
+})
+
+test('锅巴个人/群公共记忆容量：独立默认值、最小值、相邻顺序及持久化', t => {
+  const cwd = makeCwd('chatgpt-memory-capacity-config-')
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }))
+  const run = action => JSON.parse(runIn(cwd, `
+    import { mock } from 'node:test'
+    import assert from 'node:assert/strict'
+    globalThis.logger = { error: console.error, warn() {}, info() {} }
+    globalThis.redis = { get: async () => null }
+    mock.module(${JSON.stringify(moduleUrl('../utils/tts.js'))}, { namedExports: { speakers: [], vits_emotion_map: [] } })
+    mock.module(${JSON.stringify(moduleUrl('../utils/tts/microsoft-azure.js'))}, { namedExports: { supportConfigurations: [] } })
+    const { supportGuoba } = await import(${JSON.stringify(moduleUrl('../guoba.support.js'))})
+    const guoba = supportGuoba().configInfo
+    ${action}
+    process.stdout.write(JSON.stringify(await guoba.getConfigData()))
+    process.exit(0)
+  `))
+  const saved = run(`
+    const pos = guoba.schemas.findIndex(s => s.field === 'maxMemoriesPerUser')
+    assert.ok(pos >= 0)
+    assert.equal(guoba.schemas[pos].componentProps.min, 50)
+    assert.equal(guoba.schemas[pos + 1].field, 'maxMemoriesPerGroup')
+    assert.equal(guoba.schemas[pos + 1].label, '群公共最大记忆数量')
+    assert.equal(guoba.schemas[pos + 1].componentProps.min, 20)
+    const cfg = await guoba.getConfigData()
+    assert.equal(cfg.maxMemoriesPerUser, 100)
+    assert.equal(cfg.maxMemoriesPerGroup, 50)
+    await guoba.setConfigData({ maxMemoriesPerGroup: 65 }, {
+      Result: { ok() {}, error(message) { throw new Error(message) } }
+    })
+  `)
+  assert.equal(saved.maxMemoriesPerGroup, 65)
+  assert.equal(run('').maxMemoriesPerGroup, 65)
+})
+
 test('读取端：dailyTask.cfg() 未配置默认 current、配置后取值、空值回退 current', t => {
   const cwd = makeCwd('chatgpt-memory-provider-cfg-')
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }))

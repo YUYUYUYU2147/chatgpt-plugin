@@ -49,6 +49,8 @@ let hasMemories = true
 mock.module('../utils/memory/v2.js', {
   namedExports: {
     getStore: () => ({
+      stats: async () => ({ total: 0, byScope: {} }),
+      listTasks: async () => [],
       listRecallCandidates: async (...args) => {
         storeCalls.listed.push(args)
         return recallQueue.shift() ?? []
@@ -117,6 +119,53 @@ const memory = (id, updatedAt, text) => ({
   confidence: 0.9,
   importance: 0.5,
   source: 'group-window:100:2026-09-20',
+})
+
+test('两个记忆状态指令共用同一份容量与整理阈值说明', async () => {
+  const statsEvent = mkEvent('#记忆统计')
+  await new memoryManage(statsEvent).memoryStats(statsEvent)
+  const statsMsg = statsEvent.replies.at(-1)
+
+  const statusEvent = mkEvent('#群记忆状态')
+  const statusPlugin = new memoryManage(statusEvent)
+  const statusReplies = []
+  // 群状态走 this.reply（基类方法），事件上的 reply 不会被调用，这里接管并记录
+  statusPlugin.reply = async m => { statusReplies.push(String(m)) }
+  await statusPlugin.groupMemoryStatus(statusEvent)
+  const statusMsg = statusReplies.at(-1)
+
+  for (const msg of [statsMsg, statusMsg]) {
+    assert.match(msg, new RegExp(`个人记忆上限：${Config.maxMemoriesPerUser} 条`))
+    assert.match(msg, new RegExp(`群公共上限：${Config.maxMemoriesPerGroup} 条`))
+    assert.match(msg, /95%/)
+    assert.match(msg, /70%/)
+  }
+  // 内容必须一致（共用同一个 helper），避免两个指令各改一半
+  const capacityLines = statusMsg.split('\n').filter(line => line.includes('上限：'))
+  assert.equal(capacityLines.length, 2)
+  for (const line of capacityLines) assert.ok(statsMsg.includes(line), `两处说明不一致：${line}`)
+  // 召回模式必须可见（ADR 0006 的"可观测"承诺）
+  assert.match(statsMsg, /召回模式：仅文字匹配/)
+  // 重要性阈值已删除，状态里不应再出现该配置
+  assert.doesNotMatch(statsMsg, /最低重要性/)
+})
+
+test('#记忆统计 把召回接口 ID 显示成接口名称，而不是原始 ID', async () => {
+  const cfg = Config.getConfig()
+  const savedMode = cfg.memoryRecallProvider
+  const savedProviders = cfg.modelProviders
+  try {
+    cfg.modelProviders = { ...(savedProviders || {}), api: [{ id: 'prov-x', type: 'api', name: '测试接口' }] }
+    cfg.memoryRecallProvider = 'prov-x'
+    const e = mkEvent('#记忆统计')
+    await new memoryManage(e).memoryStats(e)
+    const msg = e.replies.at(-1)
+    assert.match(msg, /指定接口判断（.*测试接口/, `应显示接口名称：${msg}`)
+    assert.doesNotMatch(msg, /prov-x/, '不应把原始 ID 展示给用户')
+  } finally {
+    cfg.memoryRecallProvider = savedMode
+    cfg.modelProviders = savedProviders
+  }
 })
 
 test('观察器 rule 必须匹配任何消息文本（含多行、空串）', async () => {

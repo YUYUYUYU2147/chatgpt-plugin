@@ -34,12 +34,21 @@ export function estimateTokens(text) {
 }
 
 /**
+ * 记忆 LLM 调用的输入预算（token），**常量而非配置**：提炼分片与夜间压缩共用这一个值。
+ *
+ * 锅巴没有这个字段（面板里已把它注释掉），磁盘配置里残留的旧值（如 30000）不应再生效——
+ * 否则老实例升级后仍按旧预算切片，面板上也看不到、改不了。要调整就改这里。
+ * 「历史记忆对照」（最多 8000 字符 ≈ 6.7k token）另占约 13%，不从这里扣。
+ */
+export const MEMORY_INPUT_TOKEN_LIMIT = 50000
+
+/**
  * 按 token 上限切分消息行（相邻窗回带尾部重叠，防止跨窗问答断裂）
  * @param {Array<Object>} rows
  * @param {number} tokenLimit
  * @returns {{chunks: Array<Array<Object>>, skipped: Array<Object>}}
  */
-export function partitionRowsByTokens(rows, tokenLimit = 30000) {
+export function partitionRowsByTokens(rows, tokenLimit = MEMORY_INPUT_TOKEN_LIMIT) {
   const chunks = []
   const skipped = []
   let current = []
@@ -144,8 +153,8 @@ export function toPromptRows(raws) {
  * @param {Function} [options.onChunkProgress] 每成功一片回调全量已完成片（调用方用于持久化断点）
  * @returns {Promise<{candidates: Array, skipped: Array, usage: Object}>}
  */
-export async function runExtraction({ rows, ctx, evidenceMap, cfg = {}, llm, resumeChunks = [], onChunkProgress }) {
-  const inputTokenLimit = cfg.inputTokenLimit || 30000
+export async function runExtraction({ rows, ctx, evidenceMap, cfg = {}, llm, resumeChunks = [], onChunkProgress, historyLoader }) {
+  const inputTokenLimit = cfg.inputTokenLimit || MEMORY_INPUT_TOKEN_LIMIT
   // 每片模型调用失败后的即时重试次数（网络瞬时故障快速吸收）；退避 2s×2^(n-1)
   const chunkRetries = Number(cfg.chunkRetries) || 2
   const chunkRetryBackoffMs = Number(cfg.chunkRetryBackoffMs) || 2000
@@ -173,10 +182,12 @@ export async function runExtraction({ rows, ctx, evidenceMap, cfg = {}, llm, res
     }
 
     const windowLabel = `${ctx.windowLabel || ctx.day || 'unknown'}（分片 ${i + 1}/${chunks.length}）`
+    const history = typeof historyLoader === 'function' ? await historyLoader(chunk) : ''
     const prompt = buildExtractionPrompt({
       groupId: ctx.groupId,
       windowLabel,
       rows: chunk,
+      history,
     })
 
     // 片级结果独立：某一片反复失败只影响本片，成功片结果由 onChunkProgress 持久化，
