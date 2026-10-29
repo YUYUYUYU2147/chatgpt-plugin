@@ -82,6 +82,7 @@ import { RemoteSandboxTool } from '../utils/tools/RemoteSandboxTool.js'
 import { VercelSandboxTool } from '../utils/tools/VercelSandboxTool.js'
 import { GetPixivApiLoliconTool } from '../utils/tools/GetPixivApiLoliconTool.js'
 import { RecognitionResultsByGeminiTool } from '../utils/tools/RecognitionResultsByGeminiTool.js'
+import { ViewForwardMsgTool } from '../utils/tools/ViewForwardMsgTool.js'
 import { EmojiTool } from '../utils/tools/EmojiTool.js'
 import { MemoryTool } from '../utils/tools/MemoryTool.js'
 import { EmojiLikeTool } from '../utils/tools/EmojiLikeTool.js'
@@ -795,6 +796,10 @@ class Core {
 
           msg = await sendOpenAIWithContextFallback(messageContent, option)
 
+          // 本轮用户消息的 id 只在这里可靠：进入工具轮后 msg.parentMessageId 已经是 tool 消息。
+          // 只在本轮真的带了引用图时才记录，普通路径不带这个字段。
+          const userTurnId = quotedMedias.length ? msg.parentMessageId : undefined
+
           if (Config.debug) // 避免控制台刷屏
             logger.info(JSON.stringify(msg, null, 2))
 
@@ -918,6 +923,11 @@ class Core {
 
             option.parentMessageId = msg.id
             option.appendMessages = toolMessages
+            if (userTurnId) {
+              // 库里的用户消息已被 _stripImages 换成媒体占位；这里把「本轮原始内容」显式交给
+              // 客户端，让工具轮请求仍能带上原图（只作用于请求，不改变存储内容）
+              option.turnContent = { id: userTurnId, content: messageContent }
+            }
 
             // 拿到工具结果后重置 tool_choice 参数，允许大模型输出自然语言回答，防止死循环无限调用工具
             if (option.completionParams && option.completionParams.tool_choice === "required") {
@@ -1143,6 +1153,7 @@ async function collectTools(e) {
     { condition: Config.enableMemory, ToolClass: UserProfileTool },
     { condition: Config.enableEmojiLikeTool, ToolClass: EmojiLikeTool },
     { condition: Config.mediaRecognitionGeminiTool, ToolClass: RecognitionResultsByGeminiTool },
+    { condition: Config.viewForwardMsgTool, ToolClass: ViewForwardMsgTool },
     { condition: Config.ScheduleTask_Tool, ToolClass: ScheduleTaskTool },
     { condition: Config.TTSAudio_Tool, ToolClass: TTSAudioTool },
     { condition: Config.enableGroupMemberSkillTool && e?.isGroup && e?.isMaster, ToolClass: GroupMemberSkillTool },

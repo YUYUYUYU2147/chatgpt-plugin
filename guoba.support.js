@@ -9,6 +9,36 @@ import { formatMcpServersForGuoba, stringifyMcpServersFromGuoba } from './utils/
 import { RECALL_MODE_ALL } from './utils/memory/recallMode.js'
 import lodash from "lodash";
 
+/**
+ * 「Bot 响应白名单」的候选账号：遍历所有已注册适配器下的账号（TRSS 的 Bot.bots）。
+ *
+ * 已保存但当前不在线的账号也补进候选——否则面板可能把它当脏值丢掉，
+ * 而「先配好白名单再上号」是很常见的顺序。
+ */
+function botAccountOptions() {
+  const options = []
+  const listed = new Set()
+  const bots = globalThis.Bot?.bots
+  for (const [selfId, bot] of Object.entries(bots || {})) {
+    const value = String(selfId).trim()
+    if (!value || listed.has(value)) continue
+    listed.add(value)
+    // 只读 info 上的普通属性：部分适配器把 nickname 写成 getter，未登录时读它会抛错
+    const nickname = bot?.info?.nickname || ''
+    const adapter = bot?.adapter?.name || bot?.adapter?.id || ''
+    const suffix = [nickname, adapter].filter(Boolean).join('｜')
+    options.push({ label: suffix ? `${value}（${suffix}）` : value, value })
+  }
+  const saved = Array.isArray(Config.botReplyWhitelist) ? Config.botReplyWhitelist : []
+  for (const item of saved) {
+    const value = String(item ?? '').trim()
+    if (!value || listed.has(value)) continue
+    listed.add(value)
+    options.push({ label: `${value}（当前未登录）`, value })
+  }
+  return options
+}
+
 // 支持锅巴
 export function supportGuoba() {
   const roleOptions = avatarOptions()
@@ -43,8 +73,18 @@ export function supportGuoba() {
           component: 'SOFT_GROUP_BEGIN'
         },
         {
-          label: '触发配置',
+          label: '响应配置',
           component: 'Divider'
+        },
+        {
+          field: 'botReplyWhitelist',
+          label: 'Bot 响应白名单账号',
+          bottomHelpMessage: '多开 QQ / 多适配器时，只有列表内的 Bot 账号会响应对话触发（含群聊自主回复与第一人称呼叫）；留空表示所有账号都响应。',
+          component: 'Select',
+          componentProps: {
+            mode: 'tags',
+            options: botAccountOptions()
+          }
         },
         {
           field: 'toggleMode',
@@ -374,11 +414,11 @@ export function supportGuoba() {
         {
           field: 'mediaRecognitionSource',
           label: '内容识别来源',
-          bottomHelpMessage: '模型内置优先使用当前对话模型，失败后转指定识别配置；专用识别直接使用下方所选配置；该模型不需要系统提示词，下同',
+          bottomHelpMessage: '仅控制普通聊天的媒体处理方式：模型内置使用当前对话模型的原生多模态能力；专用识别先使用配置的识别模型生成文字描述。按需内容识别工具不受此选项影响，始终使用指定的图片或视频识别模型提供商。',
           component: 'Select',
           componentProps: {
             options: [
-              { label: '模型内置优先', value: 'Orignal' },
+              { label: '模型内置', value: 'Orignal' },
               { label: '专用识别', value: 'Gemini' }
             ]
           }
@@ -785,7 +825,7 @@ export function supportGuoba() {
         {
           field: 'mediaMaxSizeInMB',
           label: '媒体识别大小限制',
-          bottomHelpMessage: '智能模式对话中 recognize_media Tool（按需内容识别工具，模型内置与 Gemini 两条路径共用）的最大识别大小限制，注意 token 的使用',
+          bottomHelpMessage: '媒体文件大小上限，适用于智能模式 recognize_media 按需内容识别、普通聊天「专用识别」的媒体预处理及独立 #识图；图片和群友头像使用图片识别模型提供商，视频使用视频识别模型提供商，请注意 Token 消耗。',
           helpMessage: '单位：MB',
           component: 'InputNumber',
           componentProps: {
@@ -1550,7 +1590,13 @@ export function supportGuoba() {
         {
           field: 'mediaRecognitionGeminiTool',
           label: '工具新增-按需内容识别',
-          bottomHelpMessage: '新增按需内容识别工具，用于AI智能按需识别聊天记录中的图片/视频/群友头像等；当“内容识别来源”为“模型内置”时优先使用当前对话模型识别（需该模型自身支持识图/识视频），失败时自动回退 Gemini 内容识别（需配置 对话-Gemini方式 中的接口和gemini内容识别模型）',
+          bottomHelpMessage: '新增按需内容识别工具，用于AI智能按需识别聊天记录中的图片/视频/群友头像等；需要先配置 对话-图片识别模型提供商 和 视频识别模型提供商',
+          component: 'Switch'
+        },
+        {
+          field: 'viewForwardMsgTool',
+          label: '工具新增-读取合并转发',
+          bottomHelpMessage: '智能模式中允许 AI 主动读取聊天记录里的合并转发；引用转发会自动展开，不受此开关控制。依赖适配器提供 get_forward_msg，开启后消息文本中的 [CQ:forward,id=...] 不再被移除',
           component: 'Switch'
         },
         {
@@ -2988,8 +3034,13 @@ export function supportGuoba() {
                 return Result.error(`MCP 服务器配置保存失败: ${err.message}`)
               }
             }
+            // tags 下拉交回的就是数组，这里只做去空白与去重；空列表 = 不启用
+            if (keyPath === 'botReplyWhitelist') {
+              const list = Array.isArray(value) ? value : String(value ?? '').split(/[,，;；|\s]/)
+              value = [...new Set(list.map(item => String(item).trim()).filter(Boolean))]
+            }
             // 处理黑名单（本地：补充 stealImgWhitelist、按空白切分并去重）
-            if (keyPath === 'blockWords' || keyPath === 'promptBlockWords' || keyPath === 'initiativeChatGroups' || keyPath === 'paimon_chuoyichuo_ByMsgGroups') {
+            else if (keyPath === 'blockWords' || keyPath === 'promptBlockWords' || keyPath === 'initiativeChatGroups' || keyPath === 'paimon_chuoyichuo_ByMsgGroups') {
               value = value.toString().split(/[,，;；|]/)
             }
             else if (keyPath === 'blacklist' || keyPath === 'whitelist' || keyPath === 'stealImgWhitelist') {

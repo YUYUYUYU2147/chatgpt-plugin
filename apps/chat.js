@@ -44,6 +44,8 @@ import ChatCooldown from '../utils/chatCooldown.js'
 import { groupReply } from '../utils/groupReply.js'
 import { createRedactor } from '../utils/redactPrivateNumbers.js'
 import { avatarReply } from '../utils/avatarReply.js'
+import { expandQuotedForwards } from '../utils/forwardMessage.js'
+import { isBotReplyAllowed } from '../utils/botReplyWhitelist.js'
 
 let version = Config.version
 let proxy = getProxy()
@@ -55,8 +57,8 @@ import {
   convertSentenceToArray,
   extractCharacterName,
   splitString_Enter,
-  processCQMessage,
 } from '../utils/paimonFuction.js'
+import { processCQMessage } from '../utils/cqCode.js'
 
 /**
  * 「没得到回答」（模型报错或拒绝回答）的提示在群聊里延时撤回的秒数。
@@ -623,7 +625,7 @@ export class chatgpt extends plugin {
       }
       if (e.user_id == getUin(e)) return false
       if (!groupReply.markHandled(e)) return false
-      prompt = isTrss ? processCQMessage(e.raw_message, getUin(e)) : msg.trim()
+      prompt = isTrss ? processCQMessage(e.raw_message, getUin(e), { keepForward: Boolean(Config.viewForwardMsgTool) }) : msg.trim()
       try {
         if (e.isGroup && !isTrss) {
           let mm = this.e.bot.gml
@@ -675,6 +677,9 @@ export class chatgpt extends plugin {
       // 命令呼叫也在限流前接管，避免拒绝后仍由待判断批次补答。
       if (!groupReply.markHandled(e)) return false
     }
+    // 放在「这条消息确实点到了我」之后：at 模式的全量正则 `^[^#][sS]*` 匹配每条群消息，
+    // 闸门提到前面会让白名单外账号的每条群消息都打一行日志。
+    if (!isBotReplyAllowed(e, { label: '对话' })) return false
     let groupId = e.isGroup ? e.group.group_id : ''
     if (await redis.get('CHATGPT:SHUT_UP:ALL') || await redis.get(`CHATGPT:SHUT_UP:${groupId}`)) {
       logger.info('[chatgpt] chatgpt闭嘴中，不予理会')
@@ -710,6 +715,8 @@ export class chatgpt extends plugin {
       logger.info('[chatgpt] 机器人自己发出来的消息，不予理会')
       return false
     }
+    // 自主回复与直接呼叫共用这条路，两者都受 Bot 响应白名单约束。
+    if (!isBotReplyAllowed(e, { label: automatic ? '自主回复' : '第一人称呼叫' })) return false
     if (!automatic && !groupReply.markHandled(e)) return false
     // let ats = e.message.filter(m => m.type === 'at')
     // if (!(e.atme || e.atBot) && ats.length > 0) {
@@ -718,7 +725,7 @@ export class chatgpt extends plugin {
     //   }
     //   return false
     // }
-    let prompt = isTrss ? processCQMessage(e.raw_message, getUin(e)) : msg.trim()
+    let prompt = isTrss ? processCQMessage(e.raw_message, getUin(e), { keepForward: Boolean(Config.viewForwardMsgTool) }) : msg.trim()
     let groupId = e.isGroup ? e.group.group_id : ''
     if (await redis.get('CHATGPT:SHUT_UP:ALL') || await redis.get(`CHATGPT:SHUT_UP:${groupId}`)) {
       logger.info('[chatgpt] chatgpt闭嘴中，不予理会')
@@ -880,10 +887,14 @@ export class chatgpt extends plugin {
     /** 呆毛版：对话获取At用户头像 ocr/识图 */
     const isImg = await parseSourceImg(e)
 
-    // 导入 引用消息 msg
+    // 导入 引用消息 msg；引用的合并转发紧跟其后，顺序为「引用文本 → 引用转发 → 用户正文」
+    const quotedForward = await expandQuotedForwards(e)
+    const quotedPreface = [e.sourceMsg, quotedForward].filter(Boolean).join('\n\n')
     if (e.sourceMsg) {
-      prompt = e.sourceMsg + '\n\n' + prompt;
       e.msg_bak_2 = e.sourceMsg + '\n\n' + e.msg_bak_2;
+    }
+    if (quotedPreface) {
+      prompt = quotedPreface + '\n\n' + prompt;
     }
 
     if (config.imgOcr && !!isImg) {
@@ -918,7 +929,8 @@ export class chatgpt extends plugin {
       if (hasMedia) {
         let imgRecognitionByGeminiText = await recognitionResultsByGemini(e, e.img || [], (e.get_Video || []).map(v => v.url))
         if (imgRecognitionByGeminiText) {
-          prompt = (e.senderNickname ? `${e.senderNickname}(ID:${e.senderUser_id})` : "") + (e.sourceMsg || "") + '消息中多媒体内容识别信息："' + imgRecognitionByGeminiText + '"\n' + prompt
+          // e.sourceMsg 已在入 core 前单独前置（引用文本 → 引用转发 → 正文），这里不再重复
+          prompt = (e.senderNickname ? `${e.senderNickname}(ID:${e.senderUser_id})` : "") + '消息中多媒体内容识别信息："' + imgRecognitionByGeminiText + '"\n' + prompt
         }
       }
     }
@@ -1895,6 +1907,9 @@ export class chatgpt extends plugin {
       }
       return false
     }
+    // #chat1 / #chatglm / #claude / #gemini 的兼容入口。这几个方法目前没有 rule 接线，
+    // 闸门留在这里是为了它们哪天重新挂上规则时不必再补一次。
+    if (!isBotReplyAllowed(e, { label: `其他模式 ${mode}` })) return false
     let prompt = _.replace(e.msg.trimStart(), pattern, '').trim()
     if (prompt.length === 0) {
       return false
