@@ -458,7 +458,7 @@ const defaultConfig = {
   generateMathRender_ToolSwitch: false,
   generateHtml_ToolSwitch: false,
   generateGraphCalculator_ToolSwitch: false,
-  enableGroupMemberSkillTool: false,
+  enableGroupMemberSkillTool: true,
   enableDefaultMessageTriggerTool: false,
   mediaRecognitionSource: "Orignal",
   mediaRecognitionGeminiTool: true,
